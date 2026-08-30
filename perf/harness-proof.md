@@ -21,6 +21,21 @@ Gate output over the sabotaged results: `9 metric(s) breached their gate.` → e
 `verify_app.sh` red path: running it without `dist/Beam.app` writes
 `packaged_launch_ok: 0` and exits 1 (deterministic; exercised before first packaging).
 
+## Round 2 (2026-08-30, benchmark-expansion pass)
+
+- **Occlusion validity guard, proven red on a real event:** during the render-loop
+  rework the macOS screensaver engaged on the unattended dev machine; WindowServer
+  dropped every present (`presentedTime == 0`) and the typing bench refused to
+  publish, exiting 5 with "window was occluded during the run". The launch/verify
+  watchdog similarly exits 6 (`BEAM_LAUNCH_TIMEOUT`) instead of hanging. This is
+  the guard working as designed — garbage is never gated.
+- `beam --probe-presents` characterized the failure: steady-cadence presents ok
+  (296/299) while visible; 100% drops (830/830) once occluded, with `vis=0`.
+- New sabotage hooks pending their red-proof on a visible screen:
+  `BEAM_SABOTAGE_IDLE_SPIN=1` (idle-CPU gate). New L2 metrics (min, spread,
+  burst, first-key-after-idle, malloc/keystroke) ship budget-only until their
+  first validated run, then get gates + red-proofs.
+
 ## Notes
 
 - Sabotage env vars are permanent fixtures, re-runnable any time a gate's

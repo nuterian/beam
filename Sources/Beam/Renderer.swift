@@ -6,7 +6,21 @@ import BeamCore
 /// over a cleared background. Runtime-compiles its shader (works with Command
 /// Line Tools only; the cost lives inside the L1 launch budget where it is
 /// measured). maximumDrawableCount = 2 is configured by GridView on the layer.
+///
+/// Present modes (BEAM_PRESENT_MODE, chosen by measurement — see PLAN.md §5-L2):
+///   normal      commandBuffer.present(drawable); commit
+///   scheduled   commit; waitUntilScheduled; drawable.present()
+///   transaction scheduled + layer.presentsWithTransaction = true
 final class Renderer {
+    enum PresentMode: String {
+        case normal, scheduled, transaction
+    }
+    // Default stays 'normal' (the only mode with a full validated run) until
+    // scripts/present-matrix.sh has been run on a visible screen and the
+    // numbers pick a winner. Changing this default requires that data.
+    static let presentMode: PresentMode = PresentMode(
+        rawValue: ProcessInfo.processInfo.environment["BEAM_PRESENT_MODE"] ?? "normal") ?? .normal
+
     struct Instance {
         var col: UInt16
         var row: UInt16
@@ -21,12 +35,19 @@ final class Renderer {
     }
 
     static let maxInstances = 200 * 120 + 512
+    private static let ringDepth = 3
 
     let device: MTLDevice
     let atlas: GlyphAtlas
+    /// Shader runtime-compile cost, for the launch breakdown (ms).
+    let shaderCompileMs: Double
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
-    private let instanceBuffer: MTLBuffer
+    /// Instance buffers form a ring so the CPU never writes a buffer the GPU
+    /// may still be reading (single-buffer writes race under burst input).
+    private let instanceRing: [MTLBuffer]
+    private var ringIndex = 0
+    private let inflight = DispatchSemaphore(value: ringDepth)
 
     /// Deterministic counter, gated: draw calls issued for the last frame.
     private(set) var drawCallsLastFrame = 0
@@ -84,6 +105,7 @@ final class Renderer {
         queue = q
         atlas = try GlyphAtlas(device: dev, pointSize: pointSize, scale: scale)
 
+        let compileStart = monotonicNow()
         let library = try dev.makeLibrary(source: Self.shaderSource, options: nil)
         let desc = MTLRenderPipelineDescriptor()
         desc.vertexFunction = library.makeFunction(name: "grid_vs")
@@ -96,22 +118,41 @@ final class Renderer {
         att.sourceAlphaBlendFactor = .one
         att.destinationAlphaBlendFactor = .oneMinusSourceAlpha
         pipeline = try dev.makeRenderPipelineState(descriptor: desc)
+        shaderCompileMs = (monotonicNow() - compileStart) * 1000
 
-        guard let buf = dev.makeBuffer(length: Self.maxInstances * MemoryLayout<Instance>.stride,
-                                       options: .storageModeShared) else {
-            throw BeamError("no instance buffer")
+        var ring: [MTLBuffer] = []
+        for _ in 0..<Self.ringDepth {
+            guard let buf = dev.makeBuffer(length: Self.maxInstances * MemoryLayout<Instance>.stride,
+                                           options: .storageModeShared) else {
+                throw BeamError("no instance buffer")
+            }
+            ring.append(buf)
         }
-        instanceBuffer = buf
+        instanceRing = ring
     }
 
-    /// Encodes and commits one frame. onCommit fires synchronously right after
-    /// commit() (the end of the pure software path); onPresented fires with the
-    /// drawable's presentedTime (vsync-quantized).
-    func render(layer: CAMetalLayer,
-                instances: [Instance],
-                onCommit: ((Double) -> Void)? = nil,
-                onPresented: ((Double) -> Void)? = nil) {
-        guard let drawable = layer.nextDrawable() else { return }
+    /// Zero-copy frame prep: the caller writes instances straight into the
+    /// current ring slot (no intermediate array, no per-frame allocation).
+    /// Blocks (briefly) only if all ring slots are still in flight.
+    func acquireInstanceStaging() -> UnsafeMutablePointer<Instance> {
+        inflight.wait()
+        return instanceRing[ringIndex].contents().bindMemory(to: Instance.self, capacity: Self.maxInstances)
+    }
+
+    /// Encodes and commits one frame from the staged instances. onCommit fires
+    /// synchronously when the present is fully handed off (the end of the pure
+    /// software path); onPresented fires with the drawable's presentedTime.
+    func renderStaged(layer: CAMetalLayer,
+                      instanceCount: Int,
+                      onCommit: ((Double) -> Void)? = nil,
+                      onPresented: ((Double) -> Void)? = nil) {
+        let buffer = instanceRing[ringIndex]
+        ringIndex = (ringIndex + 1) % Self.ringDepth
+
+        guard let drawable = layer.nextDrawable() else {
+            inflight.signal()
+            return
+        }
 
         let flashing = flashFramesRemaining > 0
         if flashing { flashFramesRemaining -= 1 }
@@ -126,15 +167,14 @@ final class Renderer {
             : MTLClearColor(red: 0.075, green: 0.08, blue: 0.10, alpha: 1)
 
         guard let cb = queue.makeCommandBuffer(),
-              let enc = cb.makeRenderCommandEncoder(descriptor: rpd) else { return }
+              let enc = cb.makeRenderCommandEncoder(descriptor: rpd) else {
+            inflight.signal()
+            return
+        }
 
         var drawCalls = 0
-        let count = min(instances.count, Self.maxInstances)
+        let count = min(instanceCount, Self.maxInstances)
         if count > 0 && !flashing {
-            instances.withUnsafeBytes { src in
-                instanceBuffer.contents().copyMemory(
-                    from: src.baseAddress!, byteCount: count * MemoryLayout<Instance>.stride)
-            }
             var uniforms = Uniforms(
                 viewportPx: SIMD2(Float(drawable.texture.width), Float(drawable.texture.height)),
                 cellPx: SIMD2(Float(atlas.cellWidthPx), Float(atlas.cellHeightPx)),
@@ -142,7 +182,7 @@ final class Renderer {
                 originPx: SIMD2(Float(atlas.cellWidthPx), Float(atlas.cellHeightPx) / 2)
             )
             enc.setRenderPipelineState(pipeline)
-            enc.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
+            enc.setVertexBuffer(buffer, offset: 0, index: 0)
             enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             enc.setFragmentTexture(atlas.texture, index: 0)
             enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: count)
@@ -153,8 +193,20 @@ final class Renderer {
         if let onPresented {
             drawable.addPresentedHandler { d in onPresented(d.presentedTime) }
         }
-        cb.present(drawable)
-        cb.commit()
+        cb.addCompletedHandler { [inflight] _ in inflight.signal() }
+
+        switch Self.presentMode {
+        case .normal:
+            cb.present(drawable)
+            cb.commit()
+        case .scheduled, .transaction:
+            // Commit first, wait for GPU scheduling, then present directly —
+            // Apple's low-latency present recipe. Measured, not assumed:
+            // see PLAN.md §5-L2 for the mode matrix numbers.
+            cb.commit()
+            cb.waitUntilScheduled()
+            drawable.present()
+        }
         onCommit?(monotonicNow())
         drawCallsLastFrame = drawCalls
     }

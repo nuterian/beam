@@ -40,8 +40,12 @@ EOF
 echo "wrote $RESULTS/l1-lifecycle.json"
 
 echo
-echo "== L2: typing latency =="
+echo "== L2: typing latency (needs a visible screen — screensaver/occlusion aborts the run) =="
 "$BIN/beam" --bench-typing --out "$RESULTS/l2-typing.json"
+
+echo
+echo "== L7: idle CPU + RSS =="
+"$BIN/beam" --bench-idle --seconds 5 --out "$RESULTS/l7-idle.json"
 
 echo
 echo "== L3: loopback TCP echo =="

@@ -92,6 +92,12 @@ Machine-readable source of truth: [`perf/budgets.json`](perf/budgets.json). "Bud
 
 **L2 — Local render:** keystroke → present-commit (software) p50 ≤ 4 ms (6); keystroke → presented, 60 Hz dev panel, p50 ≤ 26 ms (30) / p99 ≤ 34 ms (38) — *measured floor of the naive present path, see finding below*; keystroke → presented, 120 Hz rig, p50 ≤ 6 (9) / p99 ≤ 10 (14); keystroke → local photons, 120 Hz camera-verified, p50 ≤ 8 ms (12) / p99 ≤ 12 ms (18); draw calls/frame ≤ 2 (4); steady-state allocations per keystroke 0 (0).
 
+**Render-loop architecture (implemented 2026-08-30, forced by measurement):** a *hybrid* event/display-link loop. A keystroke arriving with the pipeline cold renders immediately (event-driven, lowest latency); while the link is warm, input coalesces to the tick — exactly one render per frame, so burst input can never starve the 2-deep drawable queue (per-keystroke presents at 125 Hz measured p99 40.5 ms from starvation; coalescing exists to kill exactly that). The link pauses after ~1.5 s of quiet, so idle CPU stays ~0. Presents can be **dropped** (`presentedTime == 0`) and the drop callback is *untrustworthy* — it can arrive seconds late, only firing when a later present flushes the queue — so every accounted render carries a ~50 ms confirm deadline; an unconfirmed, unsuperseded frame re-renders via the tick **carrying the original NSEvent timestamp**, so the recorded latency honestly includes the drop penalty. An occluded window renders nothing (WindowServer drops all its presents — measured, screensaver included): the loop pauses, keeps the dirty bit, and repaints instantly on the occlusion-state notification — the same rule that will keep a hidden peer syncing with 0 ms reveal (§4.6).
+
+**Present-mode matrix, first pass (2026-08-30, partial — screensaver interrupted):** `normal` completed; `scheduled` (commit → waitUntilScheduled → drawable.present()) **stalled under sustained typing** (zero presented frames for 6 s) despite working for single launch frames — a failed experiment, recorded here so nobody retries it without new evidence. `presentsWithTransaction` untested under load. Default remains `normal`. The same run measured the cost of my first coalescing design (all input deferred to the tick): paced commit p50 went 0.31 → 9.56 ms — a half-frame tax on ordinary typing. Fix, now implemented: immediate render for the first input of each frame, coalescing only within a frame (burst), and *wake-double-present* on cold input (immediate render + one follow-up tick render carrying the same t0, recorder deduped) so idle-first-keystroke recovery costs ~1 frame instead of the 50 ms confirm deadline (measured 91.8 ms deadline-driven). **Validation run pending a visible screen** — L2 results in perf/results are from the pre-rework build until then.
+
+**Bench-validity rule (learned the hard way):** latency numbers from an occluded window are fiction. The typing bench aborts (`exit 5`) if the window was ever occluded mid-run; bench windows float on all Spaces (`.canJoinAllSpaces + .fullScreenAuxiliary`) and declare user activity against display sleep — but an already-running screensaver does not yield to synthetic input on macOS 15, so photon-path benches require an attended screen or a rig machine with the screensaver disabled. `beam --probe-presents` is the microscope for present-path behavior (steady/quiet/one-shot phases, per-present ok/drop + visibility).
+
 **First measured finding (2026-08-30, M4 Air 60 Hz, phase-uniform typing bench):** keystroke→commit p50 **0.31 ms** (entire software path: event → model → instance build → Metal encode → commit; CM6 was 0.7 ms — the predecessor's claim that the renderer is never the bottleneck holds natively too). keystroke→presented = uniform vsync phase (0–16.7 ms) **plus a constant ~17 ms**: a one-shot present from an idle window misses the imminent vsync and lands a *full extra frame* later. With `displaySyncEnabled=false` (tearing; experiment lever `BEAM_NO_DISPLAY_SYNC=1`, not a product config) p50 collapses to **4.96 ms** — so ~20 ms of the naive path is vsync *scheduling*, not machinery. This is precisely the commit→photon territory the native bet is about (§4.1: the predecessor's 9.5 ms "keystroke→paint" stopped at Chromium frame commit and never saw this tail — its true photon latency was almost certainly in the same ~25 ms band). The 60 Hz budget above holds the measured line; **cutting the extra frame is Phase 1's headline objective** — candidate levers, camera-decided: display-link-aligned presents timed to the compositor deadline, `presentsWithTransaction`, direct-to-display/fullscreen path, ProMotion.
 
 **L3 — Transport:** loopback TCP echo 64 B p50 ≤ 0.15 ms (0.3), p99 ≤ 0.4 ms (0.8); Nagle/delayed-ACK spikes in 10k msgs 0 (0); LAN overhead above L0 floor p99 ≤ 0.5 ms (1); UDP awareness ≥ 60 Hz (30).
@@ -137,6 +143,28 @@ Machine-readable source of truth: [`perf/budgets.json`](perf/budgets.json). "Bud
 - N-peer sessions; reconnect via state-vector diff; soak + energy gates; notarized distributable.
 - *Exit: L6 4-typist and L7 soak green; notarized build passes packaged verification.*
 
-## 7. Rig
+## 7. Novel benchmark roadmap
+
+Benchmarks are designed ahead of the features they gate, per §3. Each lands with its phase, budget-first, proven red before trusted. The ones already running are in `budgets.json`; this is the forward book. What makes these novel is that they gate on what users *feel* but editors never measure: minimum latency (pipeline depth), jitter, the first keystroke after a pause, behavior under occlusion and system pressure.
+
+**Running now (Phase 0/1):**
+- **Pipeline depth** — *min* keystroke→presented; the direct score for present-path engineering.
+- **Jitter gate** — presented p99−p50; smoothness as a first-class budget.
+- **Burst @125 Hz** — input faster than key repeat; catches coalescing pathologies and drawable starvation.
+- **First keystroke after idle** — the cold-pipeline tax, including present-drop recovery; the keystroke users actually judge the app by.
+- **malloc bytes/keystroke** — net allocation on the hot path (design target 0; ratcheting budget).
+- **Idle CPU foreground / RSS** — event-driven idle must measure ~0; `--bench-idle`.
+- **Present-mode matrix** (`scripts/present-matrix.sh`) — normal vs. scheduled vs. presents-with-transaction; the data picks `Renderer.presentMode`.
+
+**Phase 1 (editor):** queue-transit segment (NSEvent.timestamp → keyDown entry — real IOHID input only; the segment no web editor can see; HUD + camera sessions); open-1 MB-file→first paint; full-speed scroll dropped-frames and wheel→photon; syntax-highlight merge gate (tree-sitter merges only if every L2 gate stays green); IME marked-text correctness + latency; undo at 10k depth.
+
+**Phase 2 (presence/session):** discovery under mDNS-hostile APs (broadcast-fallback path); TCC-denial UX correctness (denied permission must surface in ≤1 s, never an empty peer list); join-code → encrypted-session establishment time.
+
+**Phase 3 (multiplayer):** occluded-peer catch-up — hidden window keeps applying remote ops (bytes applied while hidden ≥ sender's bytes sent), reveal repaint ≤ 1 frame; AI-scale paste (400-line insert → remote presented ≤ 2 frames, the predecessor's measured basis); typing-under-sync-storm (local p99 while receiving 10k ops/s); relay stall-immunity (≤5 ms under 200 ms host main-thread stall); Wi-Fi power-save spike detector (continuous RTT histogram, spike-count gate); AWDL vs. infrastructure variance matrix before trusting AWDL.
+- **Cross-machine, clock-free:** all E2E via RTT/2 + d_remote (§3.1); camera verifies the constant.
+
+**Phase 4 (groups/polish):** join-storm (N guests connect simultaneously → all editable ≤ 2 s); reconnect diff after 60 s partition; thermal soak (p99 after 30 min sustained collab vs. cold — throttling detection); battery-vs-plugged latency delta; external/multi-display present path (the compositor behaves differently per display); 8 h soak (RSS, FDs).
+
+## 8. Rig
 
 Two machines on a dedicated unmanaged GbE switch (isolated), one Wi-Fi AP for the wireless matrix, one 240 fps phone camera. L0 floor measured per rig with `ping`/`irtt` + `iperf3` and recorded in `perf/results/l0-floor.json` before any rig gate is trusted. The 120 Hz (ProMotion) machine hosts the photon gates. Until the rig exists, rig-tier metrics report "missing" (not failing) in the gate; the dev machine gates the 60 Hz software rows.

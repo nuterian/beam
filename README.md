@@ -16,7 +16,9 @@ scripts/bench.sh        # every Phase-0 bench + the gate, one command
 .build/bin/perf-gate    # judge perf/results/*.json against perf/budgets.json
 scripts/package_app.sh  # build dist/Beam.app (ad-hoc signed; env vars for real signing)
 scripts/verify_app.sh   # execute the packaged binary directly, require BEAM_LAUNCH_OK
-.build/bin/beam         # run the app (also: --bench-typing, --bench-launch, --flash-on-key)
+.build/bin/beam         # run the app (also: --bench-typing, --bench-launch,
+                        #   --bench-idle, --flash-on-key, --probe-presents)
+scripts/present-matrix.sh  # compare present strategies; the data picks the default
 ```
 
 Benchmarks only measure and write flat JSON into `perf/results/`;
