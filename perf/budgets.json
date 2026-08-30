@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "description": "Single source of truth for Beam performance budgets. Consumed by the CI gate (swift run perf-gate) and the in-app perf HUD. 'budget' is the design target; 'gate' is the CI failure threshold. tier 'pr' = deterministic or dev-machine-runnable; 'rig' = requires the dedicated two-machine LAN rig; 'weekly' = long-running.",
+  "conventions": {
+    "latency": "All timing metrics report p50/p95/p99/p99.9/max. Budgets specify which statistic they constrain. Never gate on the mean.",
+    "iterations": { "micro": 1000, "e2e": 300, "warmupDiscarded": true },
+    "baselineComparison": "In addition to absolute gates, any metric regressing >5% versus the baseline commit is reported; >15% fails.",
+    "e2eMethod": "Clock-sync-free round-trip decomposition: E2E = RTT/2 + d_remote. See PLAN.md 3.1.",
+    "clockDomain": "t0 is NSEvent.timestamp (IOHID, mach/systemUptime domain); present times are CAMetalDrawable.presentedTime / MTLCommandBuffer gpu times, same domain. Never compare timestamps across machines.",
+    "cameraOffsetMs": null,
+    "cameraOffsetNote": "Constant software-presented -> photon offset, derived once per rig by 240fps camera per PLAN.md 3.1. null = not yet calibrated; photon metrics cannot be claimed until set."
+  },
+
+  "L0_physical_floor": {
+    "note": "Calibration only, never a gate. Measured per rig so higher layers report overhead above the wire.",
+    "tier": "rig",
+    "metrics": {
+      "loopback_rtt_p99_ms": { "expected": 0.05, "method": "irtt" },
+      "wired_gbe_rtt_p99_ms": { "expected": 0.5, "method": "irtt" },
+      "wifi_rtt_p99_ms": { "expected": 5.0, "method": "irtt" },
+      "wired_throughput_mbps": { "expected": 940, "method": "iperf3" }
+    }
+  },
+
+  "L1_lifecycle": {
+    "tier": "pr",
+    "metrics": {
+      "launch_to_first_frame_ms": { "budget": 300, "gate": 500, "stat": "median_of_5_cold", "note": "Process exec (kinfo_proc start time) to first drawable presented. Includes runtime Metal shader compile — deliberately, so it is owned by a budget.", "method": "beam --bench-launch" },
+      "launch_to_typeable_ms": { "budget": 300, "gate": 500, "stat": "median_of_5_cold", "note": "First frame presented with key window + first responder accepting keystrokes. Phase 0: same instant as first frame by construction; kept separate so it can diverge and be caught.", "method": "beam --bench-launch" },
+      "launch_to_peers_visible_ms": { "budget": 1000, "gate": 2000, "note": "App launch to a peer advertised on the LAN appearing in the peer list. Phase 2 wires the full path; Phase 0 gates browse->found via L5.", "method": "rig" },
+      "binary_size_kb": { "budget": 5000, "gate": 10000, "deterministic": true, "method": "stat -f%z on release binary" },
+      "linked_dylibs": { "budget": 40, "gate": 60, "deterministic": true, "note": "otool -L on the release binary. Catches accidental dependency creep.", "method": "otool" }
+    }
+  },
+
+  "L2_local_render": {
+    "tier": "pr",
+    "metrics": {
+      "keystroke_to_commit_p50_ms": { "budget": 4, "gate": 6, "note": "NSEvent.timestamp -> command buffer committed + present() called. The pure software path; refresh-rate independent.", "method": "beam --bench-typing" },
+      "keystroke_to_commit_p99_ms": { "budget": 6, "gate": 9, "method": "beam --bench-typing" },
+      "keystroke_to_presented_60hz_p50_ms": { "budget": 26, "gate": 30, "note": "NSEvent.timestamp -> CAMetalDrawable.presentedTime, 60 Hz dev panel, MEASURED FLOOR of the naive one-shot present path (2026-08-30: phase-uniform distribution = uniform(0..16.7) + ~17 ms constant — an idle window's present misses the imminent vsync and lands a full frame later; displaySyncEnabled=false shows the non-vsync machinery is ~5 ms). Holding the line here; halving it via present-path engineering (display-link-aligned presents, presentsWithTransaction, direct-to-display — camera-decided) is Phase 1's headline objective with the aspirational numbers on the 120hz/photon rows. See PLAN.md 5-L2.", "method": "beam --bench-typing" },
+      "keystroke_to_presented_60hz_p99_ms": { "budget": 34, "gate": 38, "method": "beam --bench-typing" },
+      "keystroke_to_presented_120hz_p50_ms": { "budget": 6, "gate": 9, "tier": "rig", "method": "beam --bench-typing on ProMotion rig machine" },
+      "keystroke_to_presented_120hz_p99_ms": { "budget": 10, "gate": 14, "tier": "rig", "method": "beam --bench-typing on ProMotion rig machine" },
+      "keystroke_to_photon_120hz_p50_ms": { "budget": 8, "gate": 12, "tier": "rig", "note": "Camera-verified: presented_120hz + conventions.cameraOffsetMs. Cannot be reported until cameraOffsetMs is calibrated.", "method": "240fps camera + beam --flash-on-key" },
+      "keystroke_to_photon_120hz_p99_ms": { "budget": 12, "gate": 18, "tier": "rig", "method": "240fps camera + beam --flash-on-key" },
+      "draw_calls_per_frame": { "budget": 2, "gate": 4, "deterministic": true, "method": "renderer counter, reported by --bench-typing" },
+      "alloc_per_keystroke_steady_state": { "budget": 0, "gate": 0, "deterministic": true, "note": "Heap/ARC allocations on the keystroke hot path after warmup. Instrumented via malloc zone statistics delta.", "method": "beam --bench-typing" }
+    }
+  },
+
+  "L3_transport": {
+    "tier": "pr",
+    "note": "Loopback numbers are a software floor, not LAN numbers (PLAN.md 3.1). LAN overhead rows gate on the rig against the measured L0 floor.",
+    "metrics": {
+      "loopback_tcp_echo_64b_p50_ms": { "budget": 0.15, "gate": 0.3, "method": "bench-tcp-echo" },
+      "loopback_tcp_echo_64b_p99_ms": { "budget": 0.4, "gate": 0.8, "method": "bench-tcp-echo" },
+      "nagle_spikes_in_10k_msgs": { "budget": 0, "gate": 0, "deterministic": true, "note": "Samples >35 ms in an otherwise sub-ms distribution = Nagle/delayed-ACK interaction. noDelay regression detector; BEAM_SABOTAGE_NO_NODELAY=1 proves it can go red.", "method": "bench-tcp-echo" },
+      "lan_tcp_echo_overhead_above_floor_p99_ms": { "budget": 0.5, "gate": 1.0, "tier": "rig", "method": "bench-tcp-echo on rig, minus L0 wired floor" },
+      "udp_awareness_rate_hz": { "budget": 60, "gate": 30, "direction": "higher_is_better", "tier": "rig", "phase": 3, "method": "custom probe" }
+    }
+  },
+
+  "L4_crdt_yrs": {
+    "tier": "pr",
+    "phase": 3,
+    "note": "yrs must reproduce the predecessor's measured Yjs costs (encode 30us/18B, apply 11us) within these budgets before it is committed to.",
+    "metrics": {
+      "encode_1char_insert_us": { "budget": 50, "gate": 100, "stat": "p99" },
+      "encode_1char_insert_bytes": { "budget": 40, "gate": 64, "deterministic": true },
+      "apply_remote_1char_update_us": { "budget": 100, "gate": 200, "stat": "p99" },
+      "awareness_update_bytes": { "budget": 120, "gate": 200, "deterministic": true },
+      "load_100k_op_doc_ms": { "budget": 200, "gate": 350, "stat": "median" },
+      "reconnect_diff_1000_ops_ms": { "budget": 5, "gate": 10, "stat": "p95" },
+      "reconnect_diff_1000_ops_kb": { "budget": 20, "gate": 40, "deterministic": true }
+    }
+  },
+
+  "L5_presence_session": {
+    "tier": "pr",
+    "metrics": {
+      "browse_to_peer_found_ms": { "budget": 1000, "gate": 2000, "note": "NWBrowser start -> advertised Bonjour peer in results. Requires Local Network TCC grant; a denial must surface as an explicit error, never a silent miss.", "method": "bench-discovery" },
+      "join_to_editing_5mb_workspace_ms": { "budget": 1000, "gate": 2000, "tier": "rig", "phase": 3, "note": "Join gesture confirmed -> full snapshot applied and guest can type. Wired.", "method": "rig e2e" }
+    }
+  },
+
+  "L6_end_to_end": {
+    "tier": "rig",
+    "phase": 3,
+    "metrics": {
+      "keystroke_to_remote_commit_wired_p50_ms": { "budget": 6, "gate": 9, "method": "rtt_decomposition" },
+      "keystroke_to_remote_commit_wired_p99_ms": { "budget": 12, "gate": 16, "method": "rtt_decomposition" },
+      "keystroke_to_remote_commit_wifi_p50_ms": { "budget": 12, "gate": 18, "method": "rtt_decomposition" },
+      "keystroke_to_remote_commit_wifi_p99_ms": { "budget": 20, "gate": 35, "method": "rtt_decomposition" },
+      "remote_cursor_to_remote_paint_p99_ms": { "budget": 12, "gate": 16, "method": "rtt_decomposition" },
+      "awareness_stream_rate_hz": { "budget": 60, "gate": 30, "direction": "higher_is_better" },
+      "bytes_per_keystroke_on_wire": { "budget": 48, "gate": 64, "deterministic": true },
+      "four_typist_p99_degradation_pct": { "budget": 20, "gate": 40, "note": "Versus the two-peer p99 baseline." },
+      "relay_rtt_under_host_stall_max_ms": { "budget": 5, "gate": 15, "note": "Guest RTT-probes host relay while host main thread busy-loops 200 ms. Flat only because relay runs on its own thread/event loop — this is that architecture's regression detector (predecessor: <=1.3 ms max)." }
+    }
+  },
+
+  "L7_steady_state": {
+    "tier": "rig",
+    "metrics": {
+      "idle_cpu_connected_pct_core": { "budget": 0.5, "gate": 1.0, "note": "Most collab/Electron apps idle at 3-8%. Deliberate differentiator and battery feature; verify with powermetrics.", "method": "process sampling" },
+      "idle_cpu_hidden_pct_core": { "budget": 0.1, "gate": 0.5, "method": "process sampling" },
+      "baseline_rss_mb": { "budget": 80, "gate": 120, "method": "process sampling" },
+      "packaged_launch_ok": { "budget": 1, "gate": 1, "direction": "higher_is_better", "deterministic": true, "tier": "pr", "note": "scripts/verify_app.sh executes the packaged binary DIRECTLY and requires the BEAM_LAUNCH_OK sentinel on stderr + exit 0. The predecessor shipped a silently-broken .app for weeks; this is the never-again gate.", "method": "verify_app.sh" }
+    }
+  },
+
+  "L7_soak": {
+    "tier": "weekly",
+    "phase": 4,
+    "metrics": {
+      "eight_hour_rss_growth_pct": { "budget": 5, "gate": 15 },
+      "eight_hour_fd_growth": { "budget": 0, "gate": 5, "deterministic": true }
+    }
+  }
+}

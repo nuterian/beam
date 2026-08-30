@@ -1,0 +1,7 @@
+{
+  "L2_local_render.draw_calls_per_frame": 1,
+  "L2_local_render.keystroke_to_commit_p50_ms": 0.2689,
+  "L2_local_render.keystroke_to_commit_p99_ms": 0.3880,
+  "L2_local_render.keystroke_to_presented_60hz_p50_ms": 25.2025,
+  "L2_local_render.keystroke_to_presented_60hz_p99_ms": 33.2385
+}

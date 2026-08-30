@@ -1,0 +1,33 @@
+name: ci
+# Tier 1 (PLAN.md §3.3): build, unit tests, deterministic counters, packaged
+# launch verification, and the gate over committed results. Timing benches
+# needing a display/quiet machine run on the rig (tier 2), not here — shared
+# runners only get wide-tolerance regression checks.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tier1:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (release)
+        run: swift build -c release
+      - name: Unit tests
+        run: swift test
+      - name: Deterministic counters
+        run: |
+          BIN=.build/release
+          size_kb=$(( $(stat -f%z "$BIN/beam") / 1024 ))
+          dylibs=$(otool -L "$BIN/beam" | tail -n +2 | wc -l | tr -d ' ')
+          mkdir -p perf/results
+          printf '{\n  "L1_lifecycle.binary_size_kb": %s,\n  "L1_lifecycle.linked_dylibs": %s\n}\n' "$size_kb" "$dylibs" > perf/results/l1-ci-counters.json
+          cat perf/results/l1-ci-counters.json
+      - name: Package + verify launch
+        run: |
+          scripts/package_app.sh
+          scripts/verify_app.sh
+      - name: Perf gate
+        run: .build/release/perf-gate
