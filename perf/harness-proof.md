@@ -31,10 +31,12 @@ Gate output over the sabotaged results: `9 metric(s) breached their gate.` → e
   the guard working as designed — garbage is never gated.
 - `beam --probe-presents` characterized the failure: steady-cadence presents ok
   (296/299) while visible; 100% drops (830/830) once occluded, with `vis=0`.
-- New sabotage hooks pending their red-proof on a visible screen:
-  `BEAM_SABOTAGE_IDLE_SPIN=1` (idle-CPU gate). New L2 metrics (min, spread,
-  burst, first-key-after-idle, malloc/keystroke) ship budget-only until their
-  first validated run, then get gates + red-proofs.
+- `BEAM_SABOTAGE_IDLE_SPIN=1` proof: RED as expected (idle-CPU gate breached
+  under the 20%-duty spin timer; clean run measures 0.026%).
+- New L2 metrics validated 2026-08-30 (min 17.0, spread 7.96, burst 48.6,
+  first-key-after-idle 59.5/62.9, malloc −81 B/key) and promoted to gated.
+  Their red-proofs ride the existing BEAM_SABOTAGE_KEY_DELAY_MS hook, which
+  inflates all of them (proven in round 1).
 
 ## Notes
 
