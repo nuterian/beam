@@ -85,8 +85,42 @@ final class DocumentTests: XCTestCase {
     func testTabsAndMultibyteMapToCellColumns() {
         let doc = Document()
         _ = doc.insert(Array("\té→x".utf8))
-        XCTAssertEqual(doc.cellColumn(ofOffset: doc.buffer.count), Document.tabWidth + 3)
-        XCTAssertEqual(doc.offset(line: 0, cellColumn: Document.tabWidth), 1)
+        // Tab width is PER DOCUMENT since §5.7 — it is detected from the file
+        // in front of you, because a tab that does not advance the way the rest
+        // of the file does puts an invisible mixed indent into somebody else's
+        // source. `Document.defaultTabWidth` is the static one; `doc.tabWidth`
+        // is this document's.
+        XCTAssertEqual(doc.tabWidth, Document.defaultTabWidth)
+        XCTAssertEqual(doc.cellColumn(ofOffset: doc.buffer.count), doc.tabWidth + 3)
+        XCTAssertEqual(doc.offset(line: 0, cellColumn: doc.tabWidth), 1)
+    }
+
+    /// §5.8's disk guard, at the unit level: a save must refuse to overwrite a
+    /// file somebody else has written since it was opened.
+    func testSaveRefusesWhenTheFileChangedUnderneathIt() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("beam-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("guard.txt")
+        try Data("theirs\n".utf8).write(to: url)
+
+        let doc = Document()
+        XCTAssertTrue(doc.open(path: url.path))
+        XCTAssertEqual(doc.diskState, .unchanged)
+
+        _ = doc.insert(Array("mine ".utf8))
+        try Data("theirs, rewritten by somebody else\n".utf8).write(to: url)
+        XCTAssertEqual(doc.diskState, .modified)
+
+        XCTAssertFalse(doc.save(), "a save must not overwrite an outside write")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8),
+                       "theirs, rewritten by somebody else\n",
+                       "and the refusal must leave their bytes alone")
+
+        XCTAssertTrue(doc.save(force: true), "the user's own confirmation is the way past")
+        XCTAssertEqual(doc.diskState, .unchanged)
+        XCTAssertFalse(doc.isModified)
     }
 
     func testUndoRestoresTextAndCaret() {
