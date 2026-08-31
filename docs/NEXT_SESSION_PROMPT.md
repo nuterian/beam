@@ -1,183 +1,181 @@
-# Beam — the production session: make it trustworthy, complete, and provable
+# Beam — the UI session: make it read like a mature editor
 
 You are continuing **Beam** (`/Users/jugalmanjeshwar/Files/code/colab`), a native macOS
-editor whose entire product thesis is input-to-photon latency on a LAN. Before writing
-anything: read `PLAN.md` end to end — especially §3 (the benchmark-driven process), §5.1–§5.6
-(the six design-of-record sections), §6 (phases) and §7 (the benchmark roadmap) — then skim
-`perf/budgets.json`, `perf/harness-proof.md`, `docs/shots/`, and your project memory.
+editor whose product thesis is input-to-photon latency on a LAN. Read `PLAN.md` end to end
+first — especially §3 (the benchmark-driven process) and §5.2–§5.6, the six design-of-record
+sections — then skim `perf/budgets.json`, `perf/harness-proof.md` and `docs/shots/`.
 
-**Current branch: `phase1-editor-shell`. It has never passed the gate.** Eight commits sit on
-it unvalidated, because this machine's screensaver reclaimed the display for the whole of the
-previous session. That is the first thing to fix and it gates everything else (see "Start
-here").
+**Branch: `phase1-editor-shell`. It has never passed the gate** (see "Start here"). The
+broader production work is shelved under `docs/PRODUCTION_SESSION_PROMPT.md` and is still the
+right list *after* this one — this session is narrower and is about how the product reads.
 
-## Where Beam actually is
+## The brief
 
-It is a genuinely good *engine* with a genuinely good *shell*, and it is **not yet an editor a
-stranger could use for an hour without losing work or hitting a wall.** Both halves of that
-sentence are true and the session is about closing the gap.
+The owner put Beam side by side with VS Code and asked for four things, in these words:
+**proper use of whitespace, zoom in/out support on content, larger/bolder menu icons, a more
+meaningful status bar below.** The underlying complaint is that Beam currently looks like a
+very clean *prototype* next to something that looks like a *tool*.
 
-What works: a gap-buffer text model with a raw-coordinate line index (typing costs nothing at
-any file size), real selection, pixel-quantized scrolling, mouse editing, undo with coalescing,
-an incremental line lexer, a demand-filled glyph atlas, document tabs, a left icon rail, a
-system menu bar and command palette from one command table, an animation engine, and one-gesture
-X25519+SAS encrypted pairing over Bonjour.
+Beam is not trying to become VS Code — §5.3 and §5.4 are explicit that it removes chrome and
+keeps the window all content. The gap to close is **density, weight and information**, not
+panels.
 
-What is missing is the subject of this prompt.
+## The load-bearing constraint you must resolve first
 
-## The three changes, in priority order
+**The cell is 18×36 device pixels at 14 pt / 2×, which is exactly 1:2 — and the rail's icons
+are square paths drawn across *two adjacent cells* precisely because a cell is half a square.**
+That ratio is an accident of the point size. Measured:
 
-### 1. It must be impossible to lose the user's work — and the gate must be green
+```
+11pt: cell 14x29   2w=28 != h   BREAKS
+12pt: cell 15x31   2w=30 != h   BREAKS
+13pt: cell 17x34   2w=34 == h   holds
+14pt: cell 18x36   2w=36 == h   holds     <- today
+15pt: cell 19x39   2w=38 != h   BREAKS
+16pt: cell 20x42   2w=40 != h   BREAKS
+18pt: cell 23x47   2w=46 != h   BREAKS
+```
 
-**Beam can currently destroy a file's worth of work in one keystroke, silently.** Verified,
-not guessed:
+So **zoom cannot ship until this is decided**, and it is a real design decision, not a
+detail. Two honest options:
 
-- `⌘W` (`AppModel.closeDocument`) and `⌘Q` never look at `isModified`. Close a modified tab
-  and the edits are gone with no prompt.
-- There is **no external-modification detection**. `Document.save()` writes atomically over
-  whatever is on disk; if the file changed underneath (a `git checkout`, another editor), that
-  change is destroyed with no warning.
-- A remote peer's edits apply **last-writer-wins on a rope**. Two people typing in the same
-  region do not converge — they corrupt. §5.1 says this honestly ("not a CRDT and not
-  pretending to be one") but it is now shipping under a UI that invites collaboration.
+1. **Derive `cellHeightPx = 2 * cellWidthPx`** and let `lineHeightEm` become a *checked
+   consequence* rather than an input. Every size keeps the 1:2 grid, every icon keeps working,
+   and line height varies slightly with size. Note §5.2's rule survives either way: the cell
+   must still clear the font's real ink extents (SF Mono's `|` overshoots its own declared
+   descent), so the derived height needs the same `max(...)` guard.
+2. **Stop assuming 1:2 in the icon geometry** — draw icons into `min(2 * cellW, cellH)`
+   centred in the two-cell box. Simpler, but icons then shrink relative to the text at some
+   sizes and the rail's rhythm drifts.
 
-Do all of:
-- Unsaved-work guards on tab close, window close and quit. **Drawn in the grid, not with an
-  AppKit sheet** — §5.4's one load-bearing rule is that no AppKit control lives inside the
-  window. The overlay mechanism already exists and a confirmation is a two-item list.
-- External-change detection: record the file's modification date and size on open and save;
-  check before writing and on window activation; a changed file gets a designed state, never a
-  silent clobber.
-- **`yrs` (Phase 3).** This is where it belongs, because it is a *correctness* feature before
-  it is a collaboration feature. The L4 budgets are already written; `Edit(offset, removed,
-  inserted)` in `BeamCore/TextBuffer.swift` is the seam it slides into and everything above the
-  bytes already updates only from that triple. Hold it to the L4 budgets before committing to it.
-- **A green `scripts/gate.sh`, and replace the garbage in `perf/results/`.** The committed
-  `perf/results/l2-typing.json` is from an **occluded, invalid run** — presented p99 55.04 ms
-  against a validated 33.74, jitter 27.74 against 7.92, commit p99 22.94 against ~0.6. Those
-  numbers are fiction, they predate the validity check that would now reject them, and the HUD
-  and CI both read that file.
+Pick one, write down why in PLAN.md, and be aware that whichever you pick, **every shape glyph
+is affected** — the dividers, the caret, the chip, the rail icons and the tab accent bar are
+all drawn from `scale`-derived sizes in `GlyphAtlas.init`.
 
-### 2. The wall a real user hits in the first hour
+## The four changes
 
-- **There is no `NSTextInputClient`.** `GridView.keyDown` reads `event.characters` directly, so
-  there is no marked text, no dead keys and no IME. Option-e-é does not work. CJK is impossible.
-  §1 has called this "a correctness cliff, not a nicety" since the first plan and it is now the
-  single largest population of users who literally cannot type in Beam. Implement the protocol
-  properly — marked text must at minimum be *correct*, even if compositions render plainly —
-  and gate it (`§7` already lists "IME marked-text correctness + latency").
-- **There is no find.** No `⌘F`, no `⌘G`, no replace. An editor without find is not an editor.
-  It also wants the highlight-all-matches treatment, which is nearly free: matches are fills in
-  an ink, and the animation engine can fade them in.
-- **Font size is hardcoded `14` in six places** and there are no preferences at all. A user
-  cannot make the text bigger. Note the constraint before changing it: `lineHeightEm = 1.30` is
-  what makes the cell exactly **18×36 — a clean 1:2** — and the rail's icons are square paths
-  drawn across *two adjacent cells* because a cell is half a square. Changing the point size
-  must keep that relationship or the icon geometry breaks.
-- **One window.** No `⌘N`. And no soft wrap — long lines clip; there is horizontal scrolling
-  but no affordance that says so.
+### 1. Zoom the content (⌘+ / ⌘− / ⌘0)
 
-### 3. Make the claim provable, and make it installable
+`pointSize: 14` is hardcoded in **six** places: `AppDelegate`, `Screenshot`, `SceneDump`,
+`SceneStates` (×2) and `TextBench`. Make it one owned value.
 
-Beam's marketing is one sentence — *the fastest editor, and you can share it with the person
-beside you in one gesture with nothing leaving your network* — and **neither half is currently
-provable**.
+Changing it at runtime means **rebuilding the glyph atlas** — all 95 ASCII glyphs, every shape
+glyph, and evicting every demand-filled slot in `GlyphCache` (its `scalarForSlot` map becomes
+stale garbage the moment the cell size changes; that is a correctness bug, not a cosmetic one).
+Then every layout constant re-derives, the scroll offset must be rescaled so the same line
+stays under the caret, and the tracking areas must be rebuilt.
 
-- **The extra frame is still there.** `keystroke_to_presented_60hz_min_ms` is **16.6 ms**:
-  a whole frame of pipeline depth between commit and glass. Cutting it has been "Phase 1's
-  headline objective" since §5-L2 and has never been attempted. Commit p50 is 0.34 ms — the
-  renderer has never been the bottleneck — so this is entirely present-path engineering:
-  display-link-aligned presents timed to the compositor deadline, `presentsWithTransaction`,
-  direct-to-display, ProMotion. Each lever accepted or rejected **by measurement**;
-  `scripts/present-matrix.sh` exists for exactly this. Until this lands, 25.8 ms presented p50
-  on a 60 Hz panel is not a number anyone would switch editors for.
-- **`conventions.cameraOffsetMs` is still `null`,** so no photon claim can be made at all. It
-  needs one rig session with a 240 fps camera and `beam --flash-on-key` (see
-  `docs/camera-calibration.md`).
-- **Nothing has ever run on two machines.** Every collaboration number is loopback. §8's rig is
-  still hypothetical, and the L6 wired/Wi-Fi rows have never been measured.
-- **It is not distributable.** `scripts/package_app.sh` has signing and notarization scaffolding
-  behind `BEAM_SIGN_IDENTITY` / `BEAM_NOTARIZE_PROFILE`, but nothing is signed, there is **no
-  app icon**, no auto-update, and no first-run experience. A user who is handed `Beam.app`
-  today gets a Gatekeeper warning and an untitled buffer with no idea what to do.
+Budget it before you build it, per §3: **`zoom_step_to_presented_ms`**, and hold the L2
+keystroke rows unchanged at every zoom level — a bigger font must not make typing slower.
+Sensible steps are the ones above; consider snapping to sizes the 1:2 grid likes if you take
+option 1's alternative.
 
-## Non-negotiable process (proven five times; do not soften it)
+### 2. Larger, bolder rail icons
 
-Budget before building, prove the bench red with a `BEAM_SABOTAGE_*` hook before trusting it,
-**never merge red**, **never gate on garbage**, and never move a budget after seeing the data.
-If a metric's *meaning* changes, re-specify it in `budgets.json` with a note saying why —
-that is legitimate and has been done four times; silent drift is not.
+They are outlines at `iconStroke = max(2, scale * 1.5)` = 3 device px inside a 26 px box, in a
+72 px (36 pt) column. VS Code's activity bar is **48 pt wide with ~24 pt icons**, and its icons
+read as solid marks rather than as line drawings. At Beam's size a 3 px outline reads as
+dithering.
 
-**Two loops, and use the right one.** `scripts/check.sh` is the fast one for interface and
-model work: build, headless correctness, every surface laid out, every screenshot written,
-under a minute, **no display needed**. `scripts/gate.sh` is what you run before merging; it
-needs a visible screen and takes minutes.
+Widen the rail (5–6 cells), make the icons substantially heavier — consider **filled silhouettes
+rather than strokes**, which is what actually reads at this scale — and re-check them in
+`--screenshot --surface atlas`, which draws the atlas itself. Keep the peer-colour treatment:
+the peers icon takes a *peer's* colour when someone is nearby, which is how the rail carries
+presence in the same language as the status line (§5.2's identity set).
 
-Keep `--dump-scene` and `--screenshot` in sync with every layout change, add each new surface
-to `SceneStates` so both tools show it, and leave a before/after pair in `docs/shots/`.
-**Do not add golden-image tests.**
+### 3. Whitespace
+
+The screenshot comparison is mostly about air. Concretely: the gap between the gutter and the
+code, the padding inside a tab, the inset of the status line's contents, the rail's margins,
+and the overlay's row rhythm. Beam sets almost all of these to 1 or 2 cells because a cell was
+the only unit available — but a **sub-cell inset is available now**: a plane can carry a
+whole-pixel origin offset (that is how pixel-quantized scrolling works), so chrome can be
+inset by pixels rather than by whole cells. Use it, and keep every offset a whole device pixel.
+
+### 4. A status bar that means something
+
+Today: `7:3  2 selected` on the left, live latency on the right. That is two facts. VS Code
+shows line/column, indentation, encoding, language, and problem counts, and **every one of them
+is a button**.
+
+Add what Beam actually knows and is currently hiding: the **language** (the lexer already
+resolved it), the **encoding**, the **indentation** (tabs vs spaces and the width — `Document`
+knows `tabWidth`), and the **line ending**. Make the segments clickable where clicking means
+something, using the overlay mechanism that already exists for pickers. Keep the latency
+readout exactly where it is and exactly as prominent — **it is the brand, and no other editor
+can print it.**
+
+Give the bar a real rhythm: today's spacing is 1/2/3 cells with no system, which §5.2 already
+calls out as the difference between an instrument and debug output.
+
+## How to work
+
+**Use `scripts/check.sh`, not the gate, for the loop.** Build, headless correctness, every
+surface laid out through `--dump-scene`, every screenshot written — under a minute, **no display
+needed**. Change → build → screenshot → *look* → judge → change again, and take many turns.
+`--screenshot` renders offscreen with no window, so it works even when the machine's screen is
+unavailable, which it frequently is.
+
+Then `scripts/gate.sh` before merging, and only then.
+
+Add any new surface or state to `SceneStates` so both tools show it. A state may pin animation
+phases (that is how `hover-tab` and `hover-rail` are visible at all). **Do not add golden-image
+tests** — pixels are reviewed by eye, structure is gated by `--dump-scene`.
+
+## Invariants that are load-bearing, not stylistic
+
+- **No AppKit control inside the window.** The menu bar and the right-click `NSMenu` are the
+  only exceptions, and only because a menu is its own window. Everything drawn inside is
+  instances from one glyph atlas. This is what keeps the UI two draw calls and idle CPU at
+  0.004% of a core.
+- **`draw_calls_per_frame` is budget 2, gate 4, and both are spent** — the document plane
+  (sub-cell scroll offset plus a scissor rect) and the chrome plane. A third breaches it.
+- **Whole device pixels everywhere.** A fractional origin makes every quad sample across its
+  atlas cell's edge; that shipped once as a one-pixel seam through the join code.
+- **The animation engine (§5.6):** every palette slot carries a phase in `0…1` that the shader
+  multiplies into alpha. Fading is a property of the *ink*. Zero bytes per instance, zero
+  branches, easing on the CPU in `BeamCore/Animator.swift`. Use it for anything that moves; do
+  not add a second mechanism, and never duplicate a curve constant — one curve implemented
+  twice desynced twice in a single day.
+- **The ASCII fast path must never go through `GlyphCache`** — a screen of code is ~3500
+  characters and a dictionary lookup on each costs more than the whole commit path.
+- **Colours are designed in OKLCH, written as sRGB, annotated with measured contrast, and
+  checked for gamut clipping.** `.caret` once declared H 225 and actually rendered H 210
+  because the hex clipped blue — the table documented a colour the GPU never drew.
 
 ## Facts you must not re-derive
 
-- **Pipeline depth is ~17 ms** on the 60 Hz dev panel — one extra frame between commit and
-  glass. Commit p50 is **0.34 ms**: the renderer has never been the bottleneck. Do not
-  "optimize" it; do not regress it.
-- **`NSWindow.occlusionState` is not a visibility oracle.** It has now lied four times. Ground
-  truth is the **present-delivery ratio** (`presentedTime > 0`); `--bench-typing`, `--bench-join`,
-  `--bench-editor` and `--bench-idle` all refuse to publish below 90%. **Any new timed bench
-  must do the same** — an occluded run does not merely lose samples, because a dropped present
-  is re-rendered carrying its *original* `t0`, so the run looks like a regression rather than
-  like an aborted run.
-- **The animation engine (§5.6)**: every palette slot carries a phase in `0…1` and the shader
-  multiplies it into alpha. Fading is a property of the *ink*, not of the thing. Zero bytes per
-  instance, zero branches. Easing lives on the CPU (`BeamCore/Animator.swift`); the GPU is
-  handed a number. Do not add a second animation mechanism, and do not duplicate a curve — one
-  curve implemented twice desynced twice in a single day.
-- **The ASCII fast path must never go through `GlyphCache`.** A screen of code is ~3500
-  characters and a dictionary lookup on each costs more than the entire commit path. The cache
-  is the *miss* path only.
-- **`draw_calls_per_frame` is budget 2, gate 4, and both are spent** — the document plane
-  (which carries the sub-cell scroll offset and a scissor rect) and the chrome plane. A third
-  plane breaches the budget.
-- **`malloc_bytes_per_keystroke` is noise-dominated**: the same code has measured −81, −1.4,
-  +8.6, +29, −25 and +117. Do not chase a hundred-byte "regression"; it cannot be resolved.
-- Present mode `normal` stands. `scheduled` stalled under sustained typing; don't revisit
-  without `scripts/present-matrix.sh` evidence.
-- **Palette entries must be checked for gamut clipping.** `.caret` declared L 0.930 / C 0.075 /
-  H 225 and actually rendered at H 210 because `#B1F3FF` clips blue — the design table
-  documented a colour the GPU had never drawn.
+- Pipeline depth is ~17 ms on the 60 Hz dev panel (one extra frame between commit and glass);
+  commit p50 is 0.34 ms. The renderer has never been the bottleneck.
+- **`NSWindow.occlusionState` is not a visibility oracle** — it has lied four times. Ground
+  truth is the present-delivery ratio; all five timed benches refuse to publish below 90%. Any
+  new timed bench must do the same.
+- `malloc_bytes_per_keystroke` is noise-dominated (−81 … +117 for identical code). Do not
+  chase it.
+- The live HUD reads the same `perf/budgets.json` CI does, which is why it turns red — a
+  recent screenshot showed p50 46.6 / p99 49.8 against a 34 ms budget. Find out whether that
+  is the occluded-screen drop-recovery or a real regression **before** changing anything
+  visual, because it will confuse every judgement you make if it is real.
 
-## Environment quirks (session-blocking if forgotten)
+## Environment (session-blocking if forgotten)
 
-- **Run the gate with `scripts/gate.sh`, never `bench.sh`.** It pre-flights with
-  `beam --verify-launch` (cheap: exits the instant a frame is presented), retries only
-  screen-aborted runs (exit 5/6) with a cool-down, and fails immediately on anything else.
-- **On macOS 14+ a screensaver is rendered by `WallpaperAgent`, not `ScreenSaverEngine`**, so
-  `pgrep ScreenSaverEngine` finds nothing while every present is dropped. `caffeinate`,
-  `killall WallpaperAgent` and synthetic input do **not** dismiss one that has already started —
-  only a human at the machine does. Diagnose with `screencapture -x` and *look at the image*.
-  **If the screen is unavailable, say so early and loudly rather than burning the session on
-  retries** — `scripts/check.sh` needs no display and covers most work.
-- **Two Beam instances on one machine cannot both render** (activation is exclusive). Quit any
-  running app before gating.
-- **Git worktrees branch from a COMMIT** — parallel agents see nothing uncommitted. Commit
-  before fanning out.
-- Cold relaunches are throttled: five `--bench-launch` processes back to back land 1–3 and time
-  out on 4. `bench.sh` has a 1 s settle gap for this.
-- Build with `scripts/build.sh` (→ `.build/bin/`). Local SwiftPM is broken (CLT ManifestAPI
-  mismatch; stale modulemap masked via VFS overlay). CI uses SwiftPM fine. `touch
-  .build/swiftpm-broken` to skip the slow failing attempt in a fresh worktree.
-- `NWListener` on an ephemeral port needs `allowLocalEndpointReuse = true` **and** a
-  `newConnectionHandler`, or EINVAL.
-- Check free disk before big work.
+- **A macOS 14+ screensaver is rendered by `WallpaperAgent`.** `caffeinate`, `killall` and
+  synthetic input do not dismiss one that has started — only a human at the machine. Diagnose
+  with `screencapture -x` and *look at the image*. If the screen is gone, say so early and work
+  through `scripts/check.sh`, which needs no display.
+- `scripts/gate.sh` pre-flights with `beam --verify-launch` and retries only exit 5/6.
+- **Two Beam instances cannot both render** (activation is exclusive) — quit the app before gating.
+- **Git worktrees branch from a COMMIT**; parallel agents see nothing uncommitted.
+- Build with `scripts/build.sh`. Local SwiftPM is broken; `touch .build/swiftpm-broken` in a
+  fresh worktree to skip the slow failing attempt.
 
 ## Start here
 
-1. **Get the gate green before writing a line of feature code.** Ask the human to keep the
-   screen awake, run `scripts/gate.sh`, and read every row. Some rows *will* have moved —
-   `draw_calls_per_frame` is 1 → 2 deliberately, and `caret_blink_cpu_pct_core` measured 0.731%
-   against a 0.5% budget and a 1.0% gate. Report what moved; do not re-budget anything.
-2. Then change 1, then 2, then 3 — each landing only with the full suite green.
-3. Write the session's decisions into PLAN.md as **§5.7** and say what they amend, exactly as
-   §5.3–§5.6 do. The plan is the product's memory; a decision that is not written down there
-   will be re-litigated.
+1. **Run `scripts/gate.sh` and get it green before any visual work.** Eight-plus commits are
+   unvalidated. Expect two rows to have moved deliberately: `draw_calls_per_frame` 1 → 2, and
+   `caret_blink_cpu_pct_core` at 0.731% against a 0.5% budget and a 1.0% gate. **Report what
+   moved; do not re-budget anything.**
+2. Resolve the 1:2 cell question above, in writing, before touching zoom.
+3. Then 1 → 2 → 3 → 4, each landing with `scripts/check.sh` clean and the gate green.
+4. Write the session's decisions into PLAN.md as **§5.7**, saying what they amend, exactly as
+   §5.3–§5.6 do. A decision that is not written there will be re-litigated.
