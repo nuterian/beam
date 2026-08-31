@@ -86,6 +86,7 @@ enum SceneDump {
         case GlyphAtlas.caretGlyphIndex: return "|"
         case GlyphAtlas.dividerHIndex: return "\u{2500}"
         case GlyphAtlas.dividerVIndex: return "\u{2502}"
+        case GlyphAtlas.tabAccentIndex: return "\u{2580}"
         default:
             if glyph < 95 { return Character(UnicodeScalar(UInt8(glyph) + 32)) }
             // A demand-rasterized slot: print the character it stands for, not

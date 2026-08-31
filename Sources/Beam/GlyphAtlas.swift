@@ -67,10 +67,15 @@ final class GlyphAtlas {
     /// through text; these sit on cell *edges* and are structure.
     static let dividerHIndex: UInt16 = 106
     static let dividerVIndex: UInt16 = 107
+    /// Two device pixels on the cell's **top** edge — the accent bar that marks
+    /// the active tab. Every modern tab strip has one; without it the front tab
+    /// is just text on the ground with no container, which is exactly what
+    /// "the tabs look weird" was.
+    static let tabAccentIndex: UInt16 = 108
     /// First slot `GlyphCache` may assign. Everything below is static and is
     /// never evicted, so the chrome can never lose its own glyphs to a file
     /// full of mathematical symbols.
-    static let firstDynamicSlot = 108
+    static let firstDynamicSlot = 109
 
     /// Line height as a multiple of the em. Menlo's own box is 1.16 em and SF
     /// Mono's 1.18 — typing-terminal tight. Beam's grid carries the overlays and
@@ -378,6 +383,10 @@ final class GlyphAtlas {
         ctx.fill(CGRect(x: o.x, y: o.y, width: w, height: 1))
         o = cellOrigin(Int(Self.dividerVIndex))
         ctx.fill(CGRect(x: o.x, y: o.y, width: 1, height: h))
+        // 108 — the active tab's accent bar, on the cell's TOP edge.
+        o = cellOrigin(Int(Self.tabAccentIndex))
+        ctx.fill(CGRect(x: o.x, y: o.y + h - max(2, scale.rounded()), width: w,
+                        height: max(2, scale.rounded())))
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r8Unorm, width: atlasW, height: atlasH, mipmapped: false)

@@ -122,6 +122,13 @@ final class GridView: NSView {
     /// Beam's animation engine: a phase per palette slot, eased on the CPU and
     /// multiplied into alpha by the shader (BeamCore.Animator).
     private var animator = Animator()
+    /// The keystroke currently being interpreted by AppKit, so whatever
+    /// `doCommandBySelector` decides it meant is still charged to the key the
+    /// user actually pressed.
+    var inputT0: Double?
+    var inputDidChange = false
+    /// Byte range of a live IME composition, or nil.
+    var markedByteRange: Range<Int>?
 
     /// The phase table for this frame, with the caret folded in.
     ///
@@ -174,7 +181,7 @@ final class GridView: NSView {
         let s = min(1, max(0, c * Renderer.caretGain * 0.5 + 0.5))
         return Renderer.caretFloor + (1 - Renderer.caretFloor) * s
     }
-    private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
+    var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
 
     init(renderer: Renderer, app: AppModel) {
         self.renderer = renderer
@@ -280,10 +287,10 @@ final class GridView: NSView {
         assumeVisible || (window?.occlusionState.contains(.visible) ?? false)
     }
 
-    private var visibleCols: Int {
+    var visibleCols: Int {
         renderer.atlas.metrics.cols(forWidthPx: Int(metalLayer.drawableSize.width))
     }
-    private var visibleRows: Int {
+    var visibleRows: Int {
         renderer.atlas.metrics.rows(forHeightPx: Int(metalLayer.drawableSize.height))
     }
 
@@ -353,6 +360,92 @@ final class GridView: NSView {
         if let t0 { noteInput(t0: t0, remote: false) } else { requestRender() }
     }
 
+    // MARK: - Clipboard
+
+    /// The selection as text, or nil when there is none. Copy and cut both
+    /// refuse silently rather than clearing the pasteboard — losing what you
+    /// copied a moment ago because a later ⌘C found nothing selected is a small
+    /// theft that every editor is careful to avoid.
+    private func selectedText() -> String? {
+        guard app.surface == .editor, app.overlay == nil,
+              let sel = app.doc.selection else { return nil }
+        return app.doc.buffer.string(in: sel)
+    }
+
+    func copySelection() {
+        guard let text = selectedText() else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+
+    func cutSelection() {
+        guard selectedText() != nil else { return }
+        copySelection()
+        guard app.doc.deleteBackward() != nil else { return }
+        revealCaret()
+        app.publishCaret()
+        requestRender()
+    }
+
+    func paste() {
+        guard app.surface == .editor, app.overlay == nil,
+              let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        // Normalise line endings on the way in: a paste from a Windows file or
+        // an old Mac one would otherwise put CR bytes in the buffer, which the
+        // line index does not treat as line breaks and the atlas draws as a
+        // replacement box.
+        let normalised = text.replacingOccurrences(of: "\r\n", with: "\n")
+                             .replacingOccurrences(of: "\r", with: "\n")
+        app.doc.undo.breakCoalescing()
+        _ = app.doc.insert(Array(normalised.utf8))
+        revealCaret()
+        for b in Array(normalised.utf8) {
+            app.publishLocal(.insert, AppModel.editPayload(t0: monotonicNow(), [b]))
+        }
+        requestRender()
+    }
+
+    // MARK: - The context menu
+
+    /// Right-click. Built from the same command table as the menu bar and the
+    /// palette, so a command cannot exist in one and not the others.
+    ///
+    /// This is an `NSMenu`, which is the second and last AppKit exception after
+    /// the menu bar, on the same reasoning: a menu is its own window, so it
+    /// costs no in-window control, no draw call and no instance — and it brings
+    /// keyboard navigation, Services and accessibility that would otherwise
+    /// have to be rebuilt badly (PLAN.md §5.4).
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard app.surface == .editor else { return nil }
+        // Right-clicking outside the selection moves the caret there first,
+        // which is what every Mac text surface does — the menu then acts on
+        // what you actually pointed at.
+        let offset = offsetForPoint(convert(event.locationInWindow, from: nil))
+        if let sel = app.doc.selection, sel.contains(offset) {
+            // keep it
+        } else if app.overlay == nil {
+            app.doc.placeCaret(at: offset, extend: false)
+            app.doc.selectWord()
+            requestRender()
+        }
+        let ids = ["edit.cut", "edit.copy", "edit.paste", nil,
+                   "edit.selectAll", nil, "file.save", "file.open"]
+        let menu = NSMenu()
+        for id in ids {
+            guard let id, let i = Commands.all.firstIndex(where: { $0.id == id }) else {
+                menu.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: Commands.all[i].title,
+                                  action: #selector(AppDelegate.runCommand(_:)), keyEquivalent: "")
+            item.tag = i
+            item.target = NSApp.delegate
+            menu.addItem(item)
+        }
+        return menu
+    }
+
     /// Undo/redo, with the caret revealed and published — shared by the command
     /// table so the menu item and the shortcut cannot diverge.
     func applyHistory(redo: Bool) {
@@ -391,75 +484,34 @@ final class GridView: NSView {
         app.overlayType(printable)
     }
 
+    /// Everything that is not a command goes to **AppKit**, which dispatches it
+    /// to `insertText` or `doCommandBySelector` exactly as it does for an
+    /// `NSTextView` (see TextInput.swift). That is what makes `⌃D`, `⌥←`, `⌥⌫`,
+    /// dead keys and IME work at all, and it means the key map is the system's
+    /// — including whatever the user has customised — rather than a table of
+    /// key codes Beam has to keep correct.
     private func editorKey(_ event: NSEvent, t0: Double) {
-        let doc = app.doc
-        let extend = event.modifierFlags.contains(.shift)
-        let option = event.modifierFlags.contains(.option)
-
-        switch event.keyCode {
-        case 53:                       // esc — leave the session, keep the document
-            if app.session != nil { app.leaveSession() }
-            else if doc.selection != nil { doc.placeCaret(at: doc.caret, extend: false) }
-            else { return }
-            noteInput(t0: t0, remote: false)
-            return
-        case 123, 124, 125, 126:       // arrows
-            let motion: Document.Motion
-            switch event.keyCode {
-            case 123: motion = .left
-            case 124: motion = .right
-            case 125: motion = .down
-            default:  motion = .up
-            }
-            doc.move(motion, extend: extend, pageRows: app.viewportRows)
-            revealCaret()
-            app.publishCaret()
-        case 115: doc.move(.docStart, extend: extend); revealCaret(); app.publishCaret()   // home
-        case 119: doc.move(.docEnd, extend: extend); revealCaret(); app.publishCaret()     // end
-        case 116: doc.move(.pageUp, extend: extend, pageRows: app.viewportRows); revealCaret(); app.publishCaret()
-        case 121: doc.move(.pageDown, extend: extend, pageRows: app.viewportRows); revealCaret(); app.publishCaret()
-        case 36:                       // return
-            _ = doc.insert([0x0A])
-            revealCaret()
-            app.publishLocal(.newline, AppModel.editPayload(t0: t0))
-        case 48:                       // tab — a real tab byte; Document expands it to cells
-            _ = doc.insert([0x09])
-            revealCaret()
-            app.publishLocal(.insert, AppModel.editPayload(t0: t0, [0x09]))
-        case 51:                       // delete
-            guard doc.deleteBackward() != nil else { return }
-            revealCaret()
-            app.publishLocal(.backspace, AppModel.editPayload(t0: t0))
-        case 117:                      // forward delete
-            guard doc.deleteForward() != nil else { return }
-            revealCaret()
-            app.publishCaret()
-        default:
-            guard !option, let chars = event.characters, !chars.isEmpty else { return }
-            // Every scalar the keyboard produced, not just ASCII: the atlas
-            // fills on demand now, and dropping a character because it is not
-            // in 32...126 is the bug §5.3 fixed rather than a policy.
-            let text = String(chars.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 })
-            guard !text.isEmpty else { return }
-            _ = doc.insert(Array(text.utf8))
-            revealCaret()
-            // The wire op is still Phase 2's single byte; a multi-byte scalar
-            // is sent as its bytes in order, which the peer reassembles in the
-            // same order. Phase 3 replaces the whole op with a `yrs` update.
-            for b in Array(text.utf8) {
-                app.publishLocal(.insert, AppModel.editPayload(t0: t0, [b]))
-            }
-        }
-
         if flashOnKey { renderer.flashFramesRemaining = 1 }
-        noteInput(t0: t0, remote: false)
+        handleTextInput(event)
         if flashOnKey {
-            // Follow-up frame returns to normal content for the next camera cycle.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.requestRender() }
         }
     }
 
-    private func revealCaret() {
+    /// The document offset under a point in view coordinates. Shared by the
+    /// click hit-test and by the input method's `characterIndex(for:)`.
+    func offsetForPoint(_ p: NSPoint) -> Int {
+        let scale = window?.backingScaleFactor ?? 2
+        let m = renderer.atlas.metrics
+        let cellW = CGFloat(m.cellWidthPx) / scale, cellH = CGFloat(m.cellHeightPx) / scale
+        let ox = CGFloat(m.originX(forWidthPx: Int(metalLayer.drawableSize.width))) / scale
+        let oy = CGFloat(m.originY(forHeightPx: Int(metalLayer.drawableSize.height))) / scale
+        let col = Int(floor((p.x - ox) / cellW))
+        let row = Int(floor((bounds.height - p.y - oy) / cellH))
+        return offset(atCol: col, row: row)
+    }
+
+    func revealCaret() {
         app.doc.revealCaret(cellWidthPx: renderer.atlas.cellWidthPx,
                             cellHeightPx: renderer.atlas.cellHeightPx,
                             viewportRows: app.viewportRows, viewportCols: app.viewportCols)
@@ -486,7 +538,7 @@ final class GridView: NSView {
     /// The document offset under a grid cell, accounting for the sub-cell
     /// scroll: the row you clicked is the row you *saw*, which after a
     /// pixel-quantized scroll is not the row the cell grid would name.
-    private func offset(atCol col: Int, row: Int) -> Int {
+    func offset(atCol col: Int, row: Int) -> Int {
         let doc = app.doc
         let L = Scene.EditorLayout(cols: visibleCols, rows: visibleRows,
                                    lineCount: doc.buffer.lineCount)
@@ -533,6 +585,13 @@ final class GridView: NSView {
                 let isCloseMark = i == app.activeIndex && !app.documents[i].isModified
                     && col == Scene.tabMarkCol(app, i, startCol: start)
                 if isCloseMark { app.closeDocument(at: i) } else { app.selectDocument(i) }
+            }
+            if !handled {
+                let plus = Scene.newTabCol(app, L)
+                if col >= plus, col < plus + Scene.newTabCols {
+                    app.newDocument()
+                    handled = true
+                }
             }
             if handled { requestRender(); return }
             window?.performDrag(with: event)
@@ -643,6 +702,10 @@ final class GridView: NSView {
                     found = .tab(i)
                 }
             }
+            if found == nil {
+                let plus = Scene.newTabCol(app, L)
+                if col >= plus, col < plus + Scene.newTabCols { found = .newTab }
+            }
             return found
         }
         if col < L.railCols, row >= L.railTopRow {
@@ -729,7 +792,7 @@ final class GridView: NSView {
     }
 
     /// One input, local or remote, entering the hybrid loop.
-    private func noteInput(t0: Double, remote: Bool) {
+    func noteInput(t0: Double, remote: Bool) {
         let visible = isOnGlass
         if !remote {
             lastInputAt = monotonicNow()

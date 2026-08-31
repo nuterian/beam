@@ -480,6 +480,14 @@ enum Scene {
     /// the hierarchy; this lands it just short of the ground. Overlay rows sit
     /// on a lit panel and use the full value.
     static let hoverTileAlpha: UInt8 = 130
+    /// Cells the `+` affordance occupies at the end of the strip.
+    static let newTabCols = 3
+    /// Where `+` starts, given where the tabs ended.
+    static func newTabCol(_ app: AppModel, _ layout: EditorLayout) -> Int {
+        var end = layout.tabCol
+        forEachTab(app, layout) { _, col, width in end = col + width }
+        return end
+    }
     static func railRow(_ i: Int, _ layout: EditorLayout) -> Int {
         layout.railTopRow + i * railRowStride
     }
@@ -696,6 +704,17 @@ enum Scene {
             let d = app.documents[i]
             let active = i == app.activeIndex
             stripEnd = col + width
+            if active {
+                // The accent bar. It is the one thing that turns "text sitting
+                // on the ground" into "the front tab", and it is where the
+                // accent belongs: §5.2 reserved it for the mark and the join
+                // code, and *where you are* is the same kind of statement.
+                // Two device pixels on the cell's top edge — the accent GLYPH,
+                // not a filled cell.
+                for c in 0..<width {
+                    w.put(col: col + c, row: L.tabRow, glyph: GlyphAtlas.tabAccentIndex, ink: .accent)
+                }
+            }
             if !active {
                 w.fill(col: col, row: L.tabRow, cols: width, rows: 1, ink: .scrim, alpha: recess)
                 // Hover **lifts the tab out of the recess**, toward the ground
@@ -747,6 +766,18 @@ enum Scene {
         // opened is still open.
         if hiddenTabs > 0 {
             w.text("+\(hiddenTabs)", col: stripEnd + tabPadding, row: L.tabRow, ink: .faint)
+        } else if stripEnd + newTabCols < cols - 1 {
+            // A `+` at the end of the strip. There was no way to make a new tab
+            // at all with the mouse, and a tab strip without one is the first
+            // thing a person reaches for and does not find.
+            if app.hover == .newTab {
+                w.fill(col: stripEnd, row: L.tabRow, cols: newTabCols, rows: 1,
+                       ink: .hover, alpha: hoverTileAlpha)
+            }
+            w.text("+", col: stripEnd + 1, row: L.tabRow, ink: .dim)
+            if app.hover == .newTab {
+                w.text("+", col: stripEnd + 1, row: L.tabRow, ink: .hoverText)
+            }
         }
 
         // The rail: vertical chrome, which costs no editing rows at all.

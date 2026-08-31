@@ -49,6 +49,9 @@ struct Command {
 
 enum Commands {
     static let all: [Command] = [
+        Command(id: "file.new", title: "New Tab", group: .file, key: "n", modifiers: [.command]) {
+            $0.app.newDocument()
+        },
         Command(id: "file.open", title: "Open…", group: .file, key: "o", modifiers: [.command]) {
             $0.app.openOverlay(.files)
         },
@@ -61,6 +64,18 @@ enum Commands {
             $0.app.closeDocument(at: $0.app.activeIndex)
         },
 
+        // The clipboard. Its absence was the single most obvious "this is not a
+        // real editor" gap in the product: there was no way to get text OUT of
+        // Beam at all.
+        Command(id: "edit.cut", title: "Cut", group: .edit, key: "x", modifiers: [.command]) {
+            $0.cutSelection()
+        },
+        Command(id: "edit.copy", title: "Copy", group: .edit, key: "c", modifiers: [.command]) {
+            $0.copySelection()
+        },
+        Command(id: "edit.paste", title: "Paste", group: .edit, key: "v", modifiers: [.command]) {
+            $0.paste()
+        },
         Command(id: "edit.undo", title: "Undo", group: .edit, key: "z", modifiers: [.command]) {
             $0.applyHistory(redo: false)
         },

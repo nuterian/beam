@@ -170,6 +170,63 @@ public final class Document {
         return perform(Edit(offset: caret, removed: buffer.bytes(in: caret..<end), inserted: []))
     }
 
+    /// ⌥⌫ and ⌥⌦ — delete a whole word. A selection wins, as everywhere else.
+    @discardableResult
+    public func deleteWordBackward() -> Edit? {
+        if selection != nil { return deleteBackward() }
+        let start = wordStart(before: caret)
+        guard start < caret else { return nil }
+        undo.breakCoalescing()
+        return perform(Edit(offset: start, removed: buffer.bytes(in: start..<caret), inserted: []))
+    }
+
+    @discardableResult
+    public func deleteWordForward() -> Edit? {
+        if selection != nil { return deleteForward() }
+        let end = wordEnd(after: caret)
+        guard end > caret else { return nil }
+        undo.breakCoalescing()
+        return perform(Edit(offset: caret, removed: buffer.bytes(in: caret..<end), inserted: []))
+    }
+
+    /// ⌃K — kill to end of line, and ⌃U — to the start. Both are standard macOS
+    /// text bindings that every Cocoa text surface has had for thirty years.
+    @discardableResult
+    public func deleteToLineEnd() -> Edit? {
+        let r = buffer.lineRange(buffer.line(ofOffset: caret))
+        // On an already-empty tail, kill the newline itself — otherwise ⌃K on a
+        // blank line does nothing, which is not what it does anywhere else.
+        let end = caret < r.upperBound ? r.upperBound : min(buffer.count, r.upperBound + 1)
+        guard end > caret else { return nil }
+        undo.breakCoalescing()
+        return perform(Edit(offset: caret, removed: buffer.bytes(in: caret..<end), inserted: []))
+    }
+
+    @discardableResult
+    public func deleteToLineStart() -> Edit? {
+        let start = buffer.lineRange(buffer.line(ofOffset: caret)).lowerBound
+        guard start < caret else { return nil }
+        undo.breakCoalescing()
+        return perform(Edit(offset: start, removed: buffer.bytes(in: start..<caret), inserted: []))
+    }
+
+    /// Selects the word under the caret — double-click, and ⌥⇧-arrow's anchor.
+    public func selectWord() {
+        let lo = wordStart(before: wordEnd(after: caret))
+        let hi = wordEnd(after: lo)
+        guard hi > lo else { return }
+        anchor = lo
+        caret = hi
+        undo.breakCoalescing()
+    }
+
+    public func selectLine() {
+        let r = buffer.lineRange(buffer.line(ofOffset: caret))
+        anchor = r.lowerBound
+        caret = min(buffer.count, r.upperBound + 1)
+        undo.breakCoalescing()
+    }
+
     public func applyUndo() -> Bool {
         guard let step = undo.undo() else { return false }
         perform(step.edit.inverse, recordUndo: false)
@@ -229,7 +286,34 @@ public final class Document {
 
     // MARK: - Movement
 
-    public enum Motion { case left, right, up, down, lineStart, lineEnd, docStart, docEnd, pageUp, pageDown }
+    public enum Motion {
+        case left, right, up, down
+        case wordLeft, wordRight
+        case lineStart, lineEnd, docStart, docEnd, pageUp, pageDown
+    }
+
+    /// Word characters, for ⌥-arrow movement and ⌥-delete. Bytes >= 0x80 count
+    /// as word characters so a word with an accent in it is one word.
+    @inline(__always) static func isWordByte(_ b: UInt8) -> Bool {
+        (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A)
+            || (b >= 0x30 && b <= 0x39) || b == 0x5F || b >= 0x80
+    }
+
+    /// Start of the word at or before an offset — the macOS convention: skip
+    /// any run of non-word bytes first, then the word itself.
+    public func wordStart(before offset: Int) -> Int {
+        var i = min(max(0, offset), buffer.count)
+        while i > 0, !Self.isWordByte(buffer.byte(at: i - 1)) { i -= 1 }
+        while i > 0, Self.isWordByte(buffer.byte(at: i - 1)) { i -= 1 }
+        return i
+    }
+
+    public func wordEnd(after offset: Int) -> Int {
+        var i = min(max(0, offset), buffer.count)
+        while i < buffer.count, !Self.isWordByte(buffer.byte(at: i)) { i += 1 }
+        while i < buffer.count, Self.isWordByte(buffer.byte(at: i)) { i += 1 }
+        return i
+    }
 
     /// Moves (or extends, when `extend`) the caret. `pageRows` is the viewport
     /// height the view knows and the model does not.
@@ -266,6 +350,14 @@ public final class Document {
             caret = offset(line: next, cellColumn: target)
             desiredColumn = target
             return
+        case .wordLeft:
+            if !extend, let sel = selection { caret = sel.lowerBound; break }
+            caret = wordStart(before: caret)
+            desiredColumn = nil
+        case .wordRight:
+            if !extend, let sel = selection { caret = sel.upperBound; break }
+            caret = wordEnd(after: caret)
+            desiredColumn = nil
         case .lineStart: caret = buffer.lineRange(line).lowerBound; desiredColumn = nil
         case .lineEnd:   caret = buffer.lineRange(line).upperBound; desiredColumn = nil
         case .docStart:  caret = 0; desiredColumn = nil

@@ -94,6 +94,7 @@ final class AppModel {
     /// (PLAN.md §5.3).
     enum HoverTarget: Equatable {
         case tab(Int)
+        case newTab
         case rail(Int)
         case overlayRow(Int)
     }
@@ -268,6 +269,13 @@ final class AppModel {
         guard ambiguous, let path = documents[i].path else { return name }
         let parent = ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent
         return parent.isEmpty ? name : parent + "/" + name
+    }
+
+    /// ⌘N. A new untitled buffer in its own tab, in front.
+    func newDocument() {
+        documents.append(Document())
+        activeIndex = documents.count - 1
+        onNeedsRender?()
     }
 
     func selectDocument(_ i: Int) {
