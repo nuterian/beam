@@ -402,7 +402,9 @@ final class EditorBench {
         let scale = window.backingScaleFactor
         let cellW = CGFloat(view.renderer.atlas.cellWidthPx) / scale
         let cellH = CGFloat(view.renderer.atlas.cellHeightPx) / scale
-        let originX = cellW, originY = CGFloat(view.renderer.atlas.cellHeightPx / 2) / scale
+        let m = view.renderer.atlas.metrics
+        let originX = CGFloat(m.originX(forWidthPx: Int(view.bounds.width * scale))) / scale
+        let originY = CGFloat(m.originY(forHeightPx: Int(view.bounds.height * scale))) / scale
         let x = originX + (CGFloat(col) + 0.5) * cellW
         let yFromTop = originY + (CGFloat(row) + 0.5) * cellH
         return NSPoint(x: x, y: view.bounds.height - yFromTop)

@@ -1,5 +1,5 @@
 {
-  "L2_local_render.atlas_miss_rasterize_p99_us": 55.0420,
-  "L2_local_render.syntax_highlight_line_p99_us": 0.8750,
-  "L2_local_render.undo_10k_depth_p99_us": 0.1670
+  "L2_local_render.atlas_miss_rasterize_p99_us": 58.4160,
+  "L2_local_render.syntax_highlight_line_p99_us": 0.8340,
+  "L2_local_render.undo_10k_depth_p99_us": 0.2500
 }

@@ -161,6 +161,11 @@ final class AppModel {
     /// `--dump-scene` lay out the shipping grid with no Metal at all.
     var cellWidthPx = 18
     var cellHeightPx = 36
+    /// Where the grid starts in the drawable, in whole device pixels. Centred
+    /// rather than fixed, so the truncation remainder does not all land on the
+    /// right and bottom edges (GlyphAtlas.Metrics.originX).
+    var originXPx = 18
+    var originYPx = 18
     /// Viewport extent in cells, likewise published by the view. The model
     /// needs it for page movement and for keeping the caret on screen.
     var viewportRows = 30

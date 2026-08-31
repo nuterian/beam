@@ -18,7 +18,7 @@ enum SceneStates {
         let key: String
         let title: String
         /// Writes the frame and returns its planes, exactly as the window does.
-        let build: (inout InstanceWriter, Double, Int, Int, Int) -> [Renderer.Plane]
+        let build: (inout InstanceWriter, Double, Int, Int, Int, Int) -> [Renderer.Plane]
     }
 
     /// The grid the shipping window produces: AppDelegate's 980x640 content at
@@ -117,9 +117,12 @@ enum SceneStates {
 
         func state(_ key: String, _ title: String, _ app: AppModel,
                    _ hud: [Scene.Span] = hudSample()) -> State {
-            State(key: key, title: title) { w, now, cols, rows, widthPx in
-                app.cellWidthPx = GlyphAtlas.Metrics(pointSize: 14, scale: 2).cellWidthPx
-                app.cellHeightPx = GlyphAtlas.Metrics(pointSize: 14, scale: 2).cellHeightPx
+            State(key: key, title: title) { w, now, cols, rows, widthPx, heightPx in
+                let m = GlyphAtlas.Metrics(pointSize: 14, scale: 2)
+                app.cellWidthPx = m.cellWidthPx
+                app.cellHeightPx = m.cellHeightPx
+                app.originXPx = m.originX(forWidthPx: widthPx)
+                app.originYPx = m.originY(forHeightPx: heightPx)
                 return Scene.frame(app, into: &w, now: now, cols: cols, rows: rows,
                                    widthPx: widthPx, hud: hud)
             }

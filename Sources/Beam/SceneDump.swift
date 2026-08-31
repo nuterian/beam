@@ -27,7 +27,8 @@ enum SceneDump {
         var w = InstanceWriter(buf, cap: cap)
         // A time far past every fade, so the dump shows the settled frame.
         let m = GlyphAtlas.Metrics(pointSize: 14, scale: 2)
-        _ = state.build(&w, monotonicNow() + 10, cols, rows, cols * m.cellWidthPx)
+        _ = state.build(&w, monotonicNow() + 10, cols, rows,
+                        cols * m.cellWidthPx, rows * m.cellHeightPx)
 
         var grid = [[Character]](repeating: [Character](repeating: " ", count: cols), count: rows)
         for i in 0..<w.count {

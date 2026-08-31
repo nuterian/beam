@@ -91,6 +91,25 @@ enum Scene {
     /// traffic lights — so the chrome sits in the margin the design already
     /// reserved instead of on top of anything.
     static let margin = 6
+
+    /// **How far the chrome sits below the document's ground.**
+    ///
+    /// The one tonal decision the whole shell hangs off. Beam's ground is the
+    /// darkest thing in the old design, so every piece of chrome had to be
+    /// *lighter* than the document to be seen at all — which is backwards, and
+    /// it is why the old tab strip read as a highlighted row in a list rather
+    /// than as the top edge of the page. Modern editors invert it: the frame
+    /// recedes and the document is the raised, lit surface in the middle of it.
+    ///
+    /// There is no palette entry darker than the ground except `scrim`, and
+    /// that is exactly what it is for — so the recess is `scrim` at partial
+    /// coverage rather than a new colour. In LINEAR light (§5.2) half coverage
+    /// of a near-black over #0D1117 lands around #080B10: about one 8-bit step
+    /// per channel, which is all a tonal separation on a dark ground is allowed
+    /// to be before it starts looking like a different application's window.
+    /// The dump prints nothing for it, correctly — this is lighting, not
+    /// structure.
+    static let recess: UInt8 = 132
     /// First row anything is drawn on. Rows 0–2 are the band the traffic lights
     /// occupy; leaving them clear is what makes a title-less window look
     /// deliberate rather than broken.
@@ -176,19 +195,31 @@ enum Scene {
     /// the screen appearing only once the handshake lands.
     static func pairing(_ app: AppModel, sas: String, into w: inout InstanceWriter, now: Double,
                         cols: Int, rows: Int) {
-        w.text("beam", col: margin, row: topRow, ink: .accent)
-        let ink = Renderer.Ink.peer(app.joiningInk)
-        w.put(col: margin, row: identityRow, glyph: GlyphAtlas.chipGlyphIndex, ink: ink)
-        w.text(app.joiningName, col: margin + 3, row: identityRow, ink: .dim)
-
         let m = CodeMetrics.fitting(cols: cols)
         let codeCol = max(margin, (cols - m.totalCols) / 2)
-        // The code and its two caption lines are centred as one block, so the
-        // digits sit on the optical centre of the window rather than the
-        // arithmetic one — the caption's weight is part of the composition.
+        // **One left edge.** The mark, the identity row, the digits and both
+        // caption lines all hang off the digit block's own left edge. They used
+        // to split into two columns 72 px apart — the header on the 6-cell
+        // margin, the code centred — which on the one screen users hold up to
+        // each other read as two unrelated compositions in one window.
+        //
+        // And the whole stack centres, header included: the code plus its
+        // caption used to be centred while five rows of header sat above them,
+        // so the composition was top-heavy and left the bottom third of the
+        // window empty.
         let captionGap = 3
-        let blockRows = m.digitRows + captionGap + 2
-        let codeRow = max(identityRow + 3, (rows - blockRows) / 2)
+        // Six: the mark, two rows of air, the identity, then two more before the
+        // digits. Four put the identity row hard against the top edge of a
+        // ten-row-tall block of solid colour, which is not a gap, it is a
+        // collision.
+        let headRows = 6
+        let blockRows = headRows + m.digitRows + captionGap + 2
+        let top = max(topRow, (rows - blockRows) / 2)
+        w.text("beam", col: codeCol, row: top, ink: .accent)
+        let ink = Renderer.Ink.peer(app.joiningInk)
+        w.put(col: codeCol, row: top + 3, glyph: GlyphAtlas.chipGlyphIndex, ink: ink)
+        w.text(app.joiningName, col: codeCol + 2, row: top + 3, ink: .dim)
+        let codeRow = top + headRows
 
         let digits = Array(sas.utf8)
         for i in 0..<6 {
@@ -239,7 +270,9 @@ enum Scene {
 
             let L = EditorLayout(cols: cols, rows: rows, lineCount: app.doc.buffer.lineCount)
             let cellH = max(1, app.cellHeightPx)
-            let originY = cellH / 2
+            // Published by GridView from the same metrics the renderer uses, so
+            // the scissor and the grid cannot disagree about where row 0 starts.
+            let originY = app.originYPx
             return [
                 Renderer.Plane(
                     count: documentCount,
@@ -291,14 +324,28 @@ enum Scene {
         /// rows, which is the entire reason the rail is where the navigation
         /// lives (PLAN.md §5.4).
         let railCols = 4
+        /// Width of the line-number field, in cells. Five digits covers every
+        /// file up to 100,000 lines, which is the number §5.4 already promised;
+        /// sizing the field to the promise rather than to the open document is
+        /// what makes `codeCol` — and therefore `tabCol` — a constant.
+        static let gutterCols = 5
         /// Column the last digit of a line number sits on.
         let gutterRight: Int
         let codeCol: Int
         let textCols: Int
-        /// Where the tab strip starts. Fixed, not derived from the line count:
-        /// tabs that slid sideways when you switched to a longer file would be
-        /// the worst kind of motion.
-        var tabCol: Int { railCols + 4 }
+        /// Where the tab strip starts — **the same column the code starts on**.
+        ///
+        /// It used to be a fixed 8 while `codeCol` grew with the line count, so
+        /// the two agreed only for files under 100 lines and §5.3's "one
+        /// alignment grid" was false on every real document. Now the gutter is
+        /// a fixed-width *field* (see `gutterCols`) instead of a fixed *column*,
+        /// so `codeCol` is a constant for anything under 100,000 lines and the
+        /// tab strip can be nailed to it: one left edge for the tab, the line
+        /// number's field and the first character of every line. Tabs still
+        /// never slide when you switch files, which is what the old fixed
+        /// column was protecting — it was just protecting it in the way that
+        /// broke the alignment.
+        var tabCol: Int { codeCol }
         /// First row a rail icon may occupy. One row below the document's
         /// first line, so the rail does not start hard against the tab strip's
         /// divider.
@@ -312,9 +359,14 @@ enum Scene {
             var digits = 1
             var n = max(1, lineCount)
             while n >= 10 { n /= 10; digits += 1 }
-            // The gutter hangs between the rail and the code, and the code
-            // column only moves for a file with more lines than fit there.
-            let code = max(railCols + 4, digits + railCols + 2)
+            // **A field, not a column.** The gutter is `gutterCols` wide with
+            // one cell of air on each side of it, so the code column is a
+            // constant for every file anyone actually opens and only a file
+            // over 100,000 lines moves it. The old rule grew the code column
+            // from 100 lines up, which is why the tab strip and the code
+            // stopped sharing a left edge on essentially every real document.
+            let field = max(Self.gutterCols, digits)
+            let code = railCols + field + 2
             codeCol = code
             gutterRight = code - 2
             textCols = max(1, cols - code - 1)
@@ -325,23 +377,69 @@ enum Scene {
 
     // MARK: - Tabs and the rail
 
-    /// Walks the tab strip, handing each tab its index, start column and width.
-    /// Drawing and hit-testing both go through it, so a tab can never be drawn
-    /// somewhere you cannot click it. Non-escaping, so it allocates nothing on
-    /// the render path.
+    /// Cells of air on each side of a tab's label. Two cells is 36 device
+    /// pixels at 2x — the same optical inset a Mac tab uses, and the reason the
+    /// strip reads as a row of surfaces rather than a run of words.
+    static let tabPadding = 2
+    /// The longest label a tab will set before it truncates. A tab strip whose
+    /// tabs resize to their content is a strip whose tabs move under the
+    /// pointer, so the cap is on the label and not on the strip.
+    static let tabMaxLabel = 20
+    /// Room reserved at the right end for the `+N` overflow mark.
+    static let tabOverflowCols = 5
+
+    /// A tab's label: the document's name, truncated with an ellipsis rather
+    /// than allowed to push its neighbours off the strip. The ellipsis is one
+    /// scalar and one cell, so a truncated name costs the same grid as any
+    /// other — which is the only reason truncation is cheap enough to be the
+    /// default answer here.
+    static func tabLabel(_ app: AppModel, _ i: Int) -> String {
+        let title = app.tabTitle(i)
+        guard title.unicodeScalars.count > tabMaxLabel else { return title }
+        return String(String(title.unicodeScalars.prefix(tabMaxLabel - 1))) + "\u{2026}"
+    }
+
+    static func tabWidth(_ app: AppModel, _ i: Int) -> Int {
+        tabLabel(app, i).unicodeScalars.count + 2 * tabPadding + 2
+    }
+
+    /// Column of a tab's close × / unsaved dot. Drawing and hit-testing both
+    /// read it here, so the mark can never be somewhere you cannot click it —
+    /// which is what truncation would otherwise have quietly broken.
+    static func tabMarkCol(_ app: AppModel, _ i: Int, startCol: Int) -> Int {
+        startCol + tabPadding + tabLabel(app, i).unicodeScalars.count + 1
+    }
+
+    /// Walks the tab strip, handing each tab its index, start column and width,
+    /// and returning how many documents did **not** fit. Drawing and
+    /// hit-testing both go through it, so a tab can never be drawn somewhere
+    /// you cannot click it. Non-escaping, so it allocates nothing on the render
+    /// path.
+    ///
+    /// The two passes exist for the overflow mark: a strip that silently drops
+    /// documents off its right edge is the one failure a tab strip is not
+    /// allowed to have, so when the tabs do not fit, the last visible one gives
+    /// back `tabOverflowCols` and a `+N` takes the space.
+    @discardableResult
     static func forEachTab(_ app: AppModel, _ layout: EditorLayout,
-                           _ body: (_ index: Int, _ startCol: Int, _ width: Int) -> Void) {
+                           _ body: (_ index: Int, _ startCol: Int, _ width: Int) -> Void) -> Int {
+        var limit = layout.cols - 1
         var col = layout.tabCol
         for i in app.documents.indices {
-            // Two cells of padding, the name, a space, and the mark. Tabs abut:
-            // a hairline separates them, which is what a modern tab strip does
-            // and what makes the active tab read as a raised surface rather
-            // than as a floating pill.
-            let width = app.tabTitle(i).unicodeScalars.count + 6
-            guard col + width <= layout.cols - 1 else { return }
-            body(i, col, width)
+            let width = tabWidth(app, i)
+            if col + width > limit { limit -= tabOverflowCols; break }
             col += width
         }
+        col = layout.tabCol
+        var drawn = 0
+        for i in app.documents.indices {
+            let width = tabWidth(app, i)
+            guard col + width <= limit else { break }
+            body(i, col, width)
+            col += width
+            drawn += 1
+        }
+        return app.documents.count - drawn
     }
 
     /// One rail item: an icon and the command it runs.
@@ -358,11 +456,13 @@ enum Scene {
         RailItem(icon: GlyphAtlas.filesIconIndex, commandID: "file.open", overlay: .files),
         RailItem(icon: GlyphAtlas.peersIconIndex, commandID: "session.peers", overlay: .peers),
     ]
-    /// Rail rows are three apart. Two was the same rhythm the peer list uses,
-    /// and it was wrong here: a peer row is text and reads as a line in a list,
-    /// while an icon is a *target* and needs the air a target needs. Three rows
-    /// costs nothing — the rail is beside the text, not above it.
-    static let railRowStride = 3
+    /// Rail rows are two apart — a 72 px pitch at 2x, which is 36 pt against
+    /// VS Code's 48 pt activity bar and Zed's 40. Three rows was 54 pt: so much
+    /// air that two icons read as two unrelated marks rather than as a list of
+    /// places to go, and the column looked abandoned in the screenshots. The
+    /// icon itself is 36 px in a 72 px pitch, so it is exactly half air, which
+    /// is the ratio a row of targets wants.
+    static let railRowStride = 2
     static func railRow(_ i: Int, _ layout: EditorLayout) -> Int {
         layout.railTopRow + i * railRowStride
     }
@@ -394,8 +494,13 @@ enum Scene {
             let range = buffer.lineRange(line)
 
             // --- Surfaces first: later instances composite over earlier ones.
+            // The lit row starts at the rail's edge, not at the window's. It
+            // spans the gutter deliberately — the line number is part of "the
+            // line you are on" and every editor worth copying lights it — but
+            // running it under the rail made the rail look like a column of the
+            // document instead of a region of the window.
             if line == caretLine && selection == nil {
-                w.fill(col: 0, row: r, cols: cols, rows: 1, ink: .activeLine)
+                w.fill(col: L.railCols, row: r, cols: cols - L.railCols, rows: 1, ink: .activeLine)
             }
             if let sel = selection, sel.lowerBound <= range.upperBound, sel.upperBound >= range.lowerBound {
                 let from = max(sel.lowerBound, range.lowerBound)
@@ -534,39 +639,74 @@ enum Scene {
         let doc = app.doc
         let L = EditorLayout(cols: cols, rows: rows, lineCount: doc.buffer.lineCount)
 
+        // --- The frame. The rail and the status row are recessed regions
+        // wrapping the document, so the ground between them reads as a lit page
+        // sitting *in* the window rather than as the background everything else
+        // is painted on. See `recess`. The status band bleeds one row past the
+        // last one the layout claims: the grid's origin leaves half a cell of
+        // slack at the bottom of the drawable, and a band that stopped on the
+        // cell boundary would leave a lighter strip under itself. The GPU clips
+        // the overhang for free.
+        w.fill(col: 0, row: L.topRow, cols: L.railCols, rows: L.statusRow - L.topRow,
+               ink: .scrim, alpha: recess)
+        w.fill(col: 0, row: L.statusRow, cols: cols, rows: 2, ink: .scrim, alpha: recess)
+
         // Row 0: the tab strip, level with the traffic lights.
         //
-        // A hairline runs the full width under it, **broken beneath the active
-        // tab** — the oldest trick in tab design and still the clearest: the
-        // front document is not a highlighted row in a list, it is the top of
-        // the surface you are looking at, and the gap in the line is what says
-        // so. Everything here is one device pixel or one filled cell; there is
-        // no border machinery, because on a glyph grid there does not need to
-        // be.
+        // **The tone is inverted: the front tab is the ground, and the tabs
+        // behind it are recessed.** The old design filled the active tab with a
+        // colour *lighter* than the document, which is what a selected row in a
+        // list looks like; every modern editor does the opposite, because a tab
+        // is not an item you picked out of a list — it is the top edge of the
+        // page you are reading. Drawn this way the front tab is literally the
+        // same pixels as the document below it, and the two read as one
+        // continuous surface with a hairline running past on both sides.
+        //
+        // The recess is laid under the *tabs*, not under the whole row: the
+        // grid origin leaves half a cell of ground above row 0, and a band
+        // running the full width would put a lighter strip along the top edge
+        // of the window. Tabs sit in the middle of the strip, where there is no
+        // edge to disagree with.
         var activeTabSpan: Range<Int>?
         forEachTab(app, L) { i, col, width in
-            let d = app.documents[i]
-            let active = i == app.activeIndex
-            if active {
-                activeTabSpan = col..<(col + width)
-                w.fill(col: col, row: L.tabRow, cols: width, rows: 1, ink: .surface)
-            } else if i > 0 {
-                // A seam between adjacent inactive tabs, never against the
-                // active one — its own fill already separates it.
-                w.put(col: col, row: L.tabRow, glyph: GlyphAtlas.dividerVIndex, ink: .edge)
-            }
-            var c = w.text(app.tabTitle(i), col: col + 2, row: L.tabRow, ink: active ? .fg : .faint)
-            c += 1
-            if d.isModified {
-                w.put(col: c, row: L.tabRow, glyph: GlyphAtlas.dotGlyphIndex,
-                      ink: active ? .dim : .faint)
-            } else if active {
-                w.put(col: c, row: L.tabRow, glyph: GlyphCache.shared.glyph(for: "\u{00D7}"),
-                      ink: .faint)
-            }
+            if i == app.activeIndex { activeTabSpan = col..<(col + width) }
         }
         for c in 0..<cols where !(activeTabSpan?.contains(c) ?? false) {
             w.put(col: c, row: L.tabRow, glyph: GlyphAtlas.dividerHIndex, ink: .edge)
+        }
+        var stripEnd = L.tabCol
+        let hiddenTabs = forEachTab(app, L) { i, col, width in
+            let d = app.documents[i]
+            let active = i == app.activeIndex
+            stripEnd = col + width
+            if !active {
+                w.fill(col: col, row: L.tabRow, cols: width, rows: 1, ink: .scrim, alpha: recess)
+                if i > 0 {
+                    // A seam between adjacent recessed tabs, never against the
+                    // active one — the tone step already separates that one.
+                    w.put(col: col, row: L.tabRow, glyph: GlyphAtlas.dividerVIndex, ink: .edge)
+                }
+            }
+            w.text(tabLabel(app, i), col: col + tabPadding, row: L.tabRow,
+                   ink: active ? .fg : .dim)
+            let mark = tabMarkCol(app, i, startCol: col)
+            if d.isModified {
+                // `dim` on a background tab too, not `faint`. The dot is the
+                // only thing that says a document you cannot see has unsaved
+                // work in it — that is information, and information does not
+                // get the tertiary step.
+                w.put(col: mark, row: L.tabRow, glyph: GlyphAtlas.dotGlyphIndex, ink: .dim)
+            } else if active {
+                w.put(col: mark, row: L.tabRow, glyph: GlyphCache.shared.glyph(for: "\u{00D7}"),
+                      ink: .faint)
+            }
+        }
+        // What ten tabs look like: the strip stops where it runs out, and says
+        // how many it is not showing. Silently dropping them is the one thing a
+        // tab strip may not do — you would have no way to know a document you
+        // opened is still open.
+        if hiddenTabs > 0 {
+            w.text("+\(hiddenTabs)", col: stripEnd + tabPadding, row: L.tabRow, ink: .faint)
         }
 
         // The rail: vertical chrome, which costs no editing rows at all.
@@ -584,22 +724,41 @@ enum Scene {
             if item.overlay == .peers, !active, let first = app.peers.first {
                 ink = .peer(first.inkIndex)
             }
-            if active { w.fill(col: 0, row: r, cols: L.railCols, rows: 1, ink: .surface) }
-            // An icon is two cells wide, centred in the rail.
+            // An icon is two cells wide, centred in the rail — and a cell is
+            // 1:2, so those two cells are a SQUARE. The active state is that
+            // square filled, which reads as the rounded tile every modern
+            // activity bar uses; the old full-width bar was a 2:1 slab that
+            // said "selected row" in a rail that has no rows.
             let c = (L.railCols - 2) / 2
+            if active { w.fill(col: c, row: r, cols: 2, rows: 1, ink: .surface) }
             w.put(col: c, row: r, glyph: item.icon, ink: ink)
             w.put(col: c + 1, row: r, glyph: item.icon + 1, ink: ink)
         }
 
-        // A seam down the rail's right edge and another above the status line.
-        // Both are one device pixel and both sit on a cell edge, so they cost
-        // no row and no column — the difference between "a grid of characters"
-        // and "a window with regions in it" is a few hundred single pixels.
-        for r in L.topRow..<L.statusRow {
-            w.put(col: L.railCols, row: r, glyph: GlyphAtlas.dividerVIndex, ink: .edge)
-        }
-        for c in 0..<cols {
-            w.put(col: c, row: L.statusRow - 1, glyph: GlyphAtlas.dividerHIndex, ink: .edge)
+        // **No hairlines here at all any more.** There used to be two: one down
+        // the rail's right edge and one above the status row. Both now repeat a
+        // boundary the recess already draws, and the status one was the worse
+        // offender — it sat one device pixel above the status band with 9 px of
+        // clearance to the cap-tops below it and 36 px of air above, so it read
+        // as an underline on the last line of code rather than as the top of a
+        // region. A hairline earns its pixel where there is no tone step to do
+        // the work; where there is one, it is noise (§5.3).
+
+        // **The empty document says what to do next.** Beam launches into a
+        // blank buffer (§5.3), and a blank buffer with no chrome is a window
+        // that offers nothing at all — 1150x1850 device pixels of ground and no
+        // way in short of knowing the keymap already. Two faint rows under the
+        // caret answer that for about forty instances, and they are *not*
+        // permanent chrome: the first character you type takes them away, which
+        // is the only kind of hint an editor with this brief is allowed.
+        if doc.buffer.isEmpty && app.documents.count == 1 && doc.ioError == nil {
+            let hintRow = L.topRow + 2
+            if hintRow + 2 < L.statusRow {
+                w.text("⌘O", col: L.codeCol, row: hintRow, ink: .dim)
+                w.text("open a file", col: L.codeCol + 4, row: hintRow, ink: .faint)
+                w.text("⌘K", col: L.codeCol, row: hintRow + 1, ink: .dim)
+                w.text("who's nearby", col: L.codeCol + 4, row: hintRow + 1, ink: .faint)
+            }
         }
 
         if let err = doc.ioError {
@@ -679,11 +838,26 @@ enum Scene {
     static let overlayWidth = 64
     static let overlayTopRow = 4
     static let overlayMaxRows = 10
+    /// Width of the two *list* overlays. 64 is the width one sentence needs —
+    /// the Settings path — and making every overlay that wide put 816 device
+    /// pixels of empty highlighted row between a command and its accelerator,
+    /// which is the silhouette of a 1995 menu. Width is now a property of the
+    /// **kind** of overlay and never of what you have typed, so a panel can be
+    /// sized to its own content without resizing under your fingers.
+    static let overlayListWidth = 44
+
+    static func overlayWidth(_ kind: AppModel.Overlay) -> Int {
+        kind == .peers ? overlayWidth : overlayListWidth
+    }
 
     /// Grid row of result `i`, shared with the click hit-test.
     static func overlayRow(_ i: Int) -> Int { overlayTopRow + 3 + i }
-    static func overlayIndex(atRow row: Int) -> Int { row - (overlayTopRow + 3) }
-    static func overlayCol(cols: Int) -> Int { max(0, (cols - overlayWidth) / 2) }
+    static func overlayIndex(atRow row: Int) -> Int {
+        row < overlayTopRow + 3 ? -1 : row - (overlayTopRow + 3)
+    }
+    static func overlayCol(cols: Int, _ kind: AppModel.Overlay) -> Int {
+        max(0, (cols - overlayWidth(kind)) / 2)
+    }
 
     static func overlay(_ app: AppModel, _ kind: AppModel.Overlay,
                         into w: inout InstanceWriter, now: Double, cols: Int, rows: Int) {
@@ -695,9 +869,27 @@ enum Scene {
 
         let items = app.overlayItems
         let shown = min(items.count, overlayMaxRows)
-        let pcol = overlayCol(cols: cols)
+        let width = overlayWidth(kind)
+        let pcol = overlayCol(cols: cols, kind)
         let panelRows = 3 + max(app.overlayEmptyLines.count, shown) + 1
-        w.fill(col: pcol, row: overlayTopRow, cols: overlayWidth, rows: panelRows, ink: .surface)
+        w.fill(col: pcol, row: overlayTopRow, cols: width, rows: panelRows, ink: .surface)
+
+        // **A one-device-pixel border on all four sides.** The panel is only
+        // 1.18:1 against its own scrim, so without an edge it does not read as
+        // a card floating over the document — it reads as the code behind it
+        // having gone wrong, because the panel boundary cuts a line of source
+        // mid-word and nothing says a boundary is what happened. Four hairlines
+        // are ~150 quads in a plane that is already being written, and they are
+        // the difference between an occlusion and a rendering fault.
+        for i in 0..<width {
+            w.put(col: pcol + i, row: overlayTopRow - 1, glyph: GlyphAtlas.dividerHIndex, ink: .edge)
+            w.put(col: pcol + i, row: overlayTopRow + panelRows - 1,
+                  glyph: GlyphAtlas.dividerHIndex, ink: .edge)
+        }
+        for r in overlayTopRow..<(overlayTopRow + panelRows) {
+            w.put(col: pcol, row: r, glyph: GlyphAtlas.dividerVIndex, ink: .edge)
+            w.put(col: pcol + width, row: r, glyph: GlyphAtlas.dividerVIndex, ink: .edge)
+        }
 
         let label: String
         switch kind {
@@ -708,24 +900,37 @@ enum Scene {
         var c = w.text(label, col: pcol + 2, row: overlayTopRow + 1, ink: .faint) + 1
         c = w.text(app.overlayQuery, col: c, row: overlayTopRow + 1, ink: .fg)
         w.put(col: c, row: overlayTopRow + 1, glyph: GlyphAtlas.caretGlyphIndex, ink: .caret)
-        for i in 0..<overlayWidth {
-            w.put(col: pcol + i, row: overlayTopRow + 2, glyph: GlyphAtlas.ruleGlyphIndex, ink: .edge)
+        // The separator is `dividerH`, not `rule`: `rule` is two device pixels
+        // (it is the placeholder the join code's digits land on, where that
+        // weight is right) and two hairline weights in one product is a design
+        // system with a leak in it. It sits on the bottom edge of the row under
+        // the query — 35 px clear of the query's baseline and 10 px above the
+        // first result's cap-top — rather than on the *baseline* of that row,
+        // where `rule` put it 8 px above the list and clipped by nothing.
+        for i in 0..<width {
+            w.put(col: pcol + i, row: overlayTopRow + 2, glyph: GlyphAtlas.dividerHIndex, ink: .edge)
         }
 
         if items.isEmpty {
             // Paragraph lines do not get air between them: the two lines of a
             // designed empty state are one sentence (PLAN.md §5.2).
             for (i, line) in app.overlayEmptyLines.enumerated() {
-                w.text(line.0, col: pcol + 2, row: overlayRow(i), ink: line.1)
+                // Clipped to the panel rather than trusted to fit. One of these
+                // strings interpolates a folder path, so its length is the
+                // user's, not the designer's — and a designed empty state that
+                // runs onto the scrim is the exact failure `--dump-scene`
+                // caught once already.
+                w.text(String(String(line.0.unicodeScalars.prefix(width - 4))),
+                       col: pcol + 2, row: overlayRow(i), ink: line.1)
             }
             return
         }
         for i in 0..<shown {
             let r = overlayRow(i)
             if i == app.overlaySelection {
-                w.fill(col: pcol, row: r, cols: overlayWidth, rows: 1, ink: .selection)
+                w.fill(col: pcol + 1, row: r, cols: width - 1, rows: 1, ink: .selection)
             } else if i == app.overlayHover {
-                w.fill(col: pcol, row: r, cols: overlayWidth, rows: 1, ink: .hover)
+                w.fill(col: pcol + 1, row: r, cols: width - 1, rows: 1, ink: .hover)
             }
             var c = pcol + 2
             let item = items[i]
@@ -736,14 +941,39 @@ enum Scene {
             }
             // A shortcut sits right-aligned, the way a menu sets one — the
             // palette and the menu bar are the same table, so they read the same.
-            var room = overlayWidth - (c - pcol) - 2
+            var room = width - (c - pcol) - 2
             if let sc = item.shortcut, !sc.isEmpty {
                 let n = sc.unicodeScalars.count
-                w.text(sc, col: pcol + overlayWidth - 2 - n, row: r, ink: .faint)
+                w.text(sc, col: pcol + width - 2 - n, row: r, ink: .faint)
                 room -= n + 2
+            } else if i == app.overlaySelection, item.number == nil {
+                // **Actionable, for the price of nothing permanent.** The row
+                // you are on says what the next keystroke does, and only that
+                // row does — so the hint exists exactly while it is true and
+                // is gone the instant you arrow off it. Rows that already carry
+                // an accelerator (the palette) or a number key (the peer list,
+                // §5.1's gesture) have answered the question and keep theirs.
+                //
+                // The word, not a return glyph: `↩` is not in SF Mono, so it
+                // resolves through the cascade to a proportional face and
+                // arrives squashed into one cell. Six cells of `faint` is
+                // cheaper than a fallback nobody can predict.
+                w.text("return", col: pcol + width - 8, row: r, ink: .faint)
+                room -= 8
             }
-            w.text(String(item.title.suffix(max(1, room))), col: c, row: r,
-                   ink: i == app.overlaySelection ? .fg : .dim)
+            // Truncation keeps the TAIL of a path — the file's own name is the
+            // part you are reading — and says so with a leading ellipsis. It
+            // used to drop the head silently, so `src/renderer.rs` in a narrow
+            // panel became `enderer.rs`, which is not a shorter name, it is a
+            // wrong one.
+            let title = item.title
+            if title.unicodeScalars.count > room, room > 1 {
+                w.put(col: c, row: r, glyph: GlyphCache.shared.glyph(for: "\u{2026}"), ink: .faint)
+                w.text(String(String(title.unicodeScalars.suffix(room - 1))), col: c + 1, row: r,
+                       ink: i == app.overlaySelection ? .fg : .dim)
+            } else {
+                w.text(title, col: c, row: r, ink: i == app.overlaySelection ? .fg : .dim)
+            }
         }
     }
 

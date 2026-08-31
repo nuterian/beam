@@ -500,10 +500,9 @@ final class Renderer {
                     viewportPx: SIMD2(Float(target.width), Float(target.height)),
                     cellPx: SIMD2(Float(atlas.cellWidthPx), Float(atlas.cellHeightPx)),
                     atlasCells: SIMD2(Float(GlyphAtlas.atlasCols), Float(GlyphAtlas.atlasRows)),
-                    // Whole pixels. `cellHeightPx / 2` is integer division on
-                    // purpose: a half-pixel grid origin is what put a one-pixel
-                    // seam through the join code's digits.
-                    originPx: SIMD2(Float(atlas.cellWidthPx), Float(atlas.cellHeightPx / 2))
+                    // Centred, in whole pixels — see GlyphAtlas.Metrics.originX.
+                    originPx: SIMD2(Float(atlas.metrics.originX(forWidthPx: target.width)),
+                                    Float(atlas.metrics.originY(forHeightPx: target.height)))
                         + plane.originOffsetPx,
                     caretTime: caretTime)
                 if let s = plane.scissorPx {

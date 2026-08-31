@@ -452,8 +452,9 @@ final class GridView: NSView {
         let scale = window?.backingScaleFactor ?? 2
         let cellW = CGFloat(renderer.atlas.cellWidthPx) / scale
         let cellH = CGFloat(renderer.atlas.cellHeightPx) / scale
-        let originX = CGFloat(renderer.atlas.cellWidthPx) / scale
-        let originY = CGFloat(renderer.atlas.cellHeightPx / 2) / scale
+        let m = renderer.atlas.metrics
+        let originX = CGFloat(m.originX(forWidthPx: Int(metalLayer.drawableSize.width))) / scale
+        let originY = CGFloat(m.originY(forHeightPx: Int(metalLayer.drawableSize.height))) / scale
         return (Int(floor((p.x - originX) / cellW)),
                 Int(floor((bounds.height - p.y - originY) / cellH)))
     }
@@ -480,9 +481,9 @@ final class GridView: NSView {
     override func mouseDown(with event: NSEvent) {
         let (col, row) = gridPosition(event)
         if let kind = app.overlay {
-            let pcol = Scene.overlayCol(cols: visibleCols)
+            let pcol = Scene.overlayCol(cols: visibleCols, kind)
             let i = Scene.overlayIndex(atRow: row)
-            if col >= pcol, col < pcol + Scene.overlayWidth,
+            if col >= pcol, col < pcol + Scene.overlayWidth(kind),
                i >= 0, i < app.overlayItems.count {
                 app.overlaySelect(i)
                 app.overlayCommit()
@@ -506,7 +507,7 @@ final class GridView: NSView {
                 guard !handled, col >= start, col < start + width else { return }
                 handled = true
                 let isCloseMark = i == app.activeIndex && !app.documents[i].isModified
-                    && col == start + 2 + app.tabTitle(i).unicodeScalars.count + 1
+                    && col == Scene.tabMarkCol(app, i, startCol: start)
                 if isCloseMark { app.closeDocument(at: i) } else { app.selectDocument(i) }
             }
             if handled { requestRender(); return }
@@ -559,11 +560,11 @@ final class GridView: NSView {
     /// would wake the render loop on every motion — the exact shape of the
     /// 3.4%-idle-CPU regression Phase 2 caught (PLAN.md §5.3).
     override func mouseMoved(with event: NSEvent) {
-        guard app.overlay != nil else { return }
+        guard let kind = app.overlay else { return }
         let (col, row) = gridPosition(event)
-        let pcol = Scene.overlayCol(cols: visibleCols)
+        let pcol = Scene.overlayCol(cols: visibleCols, kind)
         let i = Scene.overlayIndex(atRow: row)
-        let hover = (col >= pcol && col < pcol + Scene.overlayWidth
+        let hover = (col >= pcol && col < pcol + Scene.overlayWidth(kind)
                      && i >= 0 && i < app.overlayItems.count) ? i : -1
         guard hover != app.overlayHover else { return }
         app.overlayHover = hover
@@ -932,6 +933,8 @@ final class GridView: NSView {
         // is what lets --dump-scene lay out the shipping grid with no Metal.
         app.cellWidthPx = renderer.atlas.cellWidthPx
         app.cellHeightPx = renderer.atlas.cellHeightPx
+        app.originXPx = renderer.atlas.metrics.originX(forWidthPx: Int(metalLayer.drawableSize.width))
+        app.originYPx = renderer.atlas.metrics.originY(forHeightPx: Int(metalLayer.drawableSize.height))
         let layout = Scene.EditorLayout(cols: cols, rows: rows, lineCount: app.doc.buffer.lineCount)
         app.viewportRows = layout.docRows
         app.viewportCols = layout.textCols

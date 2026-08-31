@@ -160,6 +160,27 @@ final class GlyphAtlas {
         /// GridView applies to `drawableSize`.
         func cols(forWidthPx w: Int) -> Int { max(1, w / cellWidthPx - 2) }
         func rows(forHeightPx h: Int) -> Int { max(1, h / cellHeightPx - 1) }
+
+        /// Where the grid starts, in whole device pixels.
+        ///
+        /// The origin used to be the constant `(cellWidth, cellHeight/2)`,
+        /// which meant the truncation remainder of `cols`/`rows` landed
+        /// **entirely on the right and bottom edges** — measured 18 px left
+        /// against 34 right, and 18 top against 38 bottom. In a window that is
+        /// nothing but content, every edge inherits that, and the whole
+        /// composition reads as floating up and to the left without any single
+        /// element being wrong. Centring splits the remainder evenly.
+        ///
+        /// Integer division keeps both on whole device pixels, which §5.2
+        /// requires: a fractional origin makes every quad sample across its
+        /// atlas cell's edge, and that shipped once as a one-pixel seam through
+        /// the join code.
+        func originX(forWidthPx w: Int) -> Int {
+            max(0, (w - cols(forWidthPx: w) * cellWidthPx) / 2)
+        }
+        func originY(forHeightPx h: Int) -> Int {
+            max(0, (h - rows(forHeightPx: h) * cellHeightPx) / 2)
+        }
     }
 
     let texture: MTLTexture
@@ -264,16 +285,23 @@ final class GlyphAtlas {
         o = cellOrigin(Int(Self.barGlyphIndex))
         ctx.fill(CGRect(x: o.x, y: o.y, width: max(1, (scale * 1.5).rounded()), height: h))
 
-        // 99 — rounded chip, ~60% of the cell wide and a third of it tall,
-        // optically centred on the x-height rather than on the cell, so it sits
-        // on the same line as the name beside it instead of floating.
+        // 99 — the identity chip: a rounded SQUARE, optically centred on the
+        // x-height rather than on the cell, so it sits on the same line as the
+        // name beside it instead of floating.
+        //
+        // It used to be a 14x7 fully-rounded pill, which is a 2:1 horizontal
+        // dash — and it is drawn immediately before hostnames like
+        // `marlowe-air`, where it read as punctuation rather than as a person.
+        // A square of the same ink area carries the hue just as well (that was
+        // the original worry) and cannot be mistaken for an en dash.
         o = cellOrigin(Int(Self.chipGlyphIndex))
-        let chipW = (w * 0.78).rounded(), chipH = (h * 0.20).rounded()
-        let chipY = (o.y + CGFloat(cellHeightPx - baselinePx) + (CGFloat(baselinePx) * 0.30)).rounded()
+        let chipW = (w * 0.56).rounded(), chipH = chipW
+        let chipY = (o.y + CGFloat(cellHeightPx - baselinePx) + (CGFloat(baselinePx) * 0.22)).rounded()
         ctx.beginPath()
         ctx.addPath(CGPath(roundedRect: CGRect(x: (o.x + (w - chipW) / 2).rounded(), y: chipY,
                                                width: chipW, height: chipH),
-                           cornerWidth: chipH / 2, cornerHeight: chipH / 2, transform: nil))
+                           cornerWidth: (chipW * 0.3).rounded(), cornerHeight: (chipW * 0.3).rounded(),
+                           transform: nil))
         ctx.fillPath()
 
         // 100 — replacement: a hollow box, inset and a whole pixel thick, so it
@@ -293,38 +321,51 @@ final class GlyphAtlas {
         }
         ctx.setStrokeColor(CGColor(gray: 1, alpha: 1))
         ctx.setFillColor(CGColor(gray: 1, alpha: 1))
-        let iconStroke = max(1, (scale * 1.0).rounded())
+        // **A rail icon's stroke is 1.5 points, not 1 device pixel.** At one
+        // device pixel a 36 px icon on a dark ground reads as dithering rather
+        // than as a drawn mark — it is below the weight the surrounding text is
+        // set at, so the one element in the window whose whole job is to be a
+        // target was the faintest thing in it.
+        let iconStroke = max(2, (scale * 1.5).rounded())
 
         // 101/102 — files: a page outline with three lines of text in it. A
         // folded corner is illegible at this size; three strokes are not.
         var box = iconBox(Int(Self.filesIconIndex))
-        let pageW = (box.width * 0.56).rounded(), pageH = (box.height * 0.70).rounded()
+        // 3:4 with a small radius. At 0.46 wide and a radius of two strokes it
+        // came out a capsule — a battery, not a page — which is what happens
+        // when a corner radius is derived from the stroke instead of from the
+        // shape it is rounding.
+        let pageW = (box.width * 0.58).rounded(), pageH = (box.height * 0.74).rounded()
         let page = CGRect(x: (box.midX - pageW / 2).rounded(), y: (box.midY - pageH / 2).rounded(),
                           width: pageW, height: pageH)
         ctx.setLineWidth(iconStroke)
         ctx.addPath(CGPath(roundedRect: page.insetBy(dx: iconStroke / 2, dy: iconStroke / 2),
-                           cornerWidth: iconStroke * 2, cornerHeight: iconStroke * 2, transform: nil))
+                           cornerWidth: scale * 1.5, cornerHeight: scale * 1.5, transform: nil))
         ctx.strokePath()
         for k in 1...3 {
             let y = (page.minY + page.height * CGFloat(k) / 4).rounded()
-            ctx.fill(CGRect(x: (page.minX + pageW * 0.22).rounded(), y: y,
-                            width: (pageW * 0.56).rounded(), height: iconStroke))
+            ctx.fill(CGRect(x: (page.minX + pageW * 0.24).rounded(), y: y,
+                            width: (pageW * 0.52).rounded(), height: iconStroke))
         }
 
         // 103/104 — peers: two overlapping discs, the same metaphor the peer
         // chip already uses, so the rail's language and the roster's agree.
         box = iconBox(Int(Self.peersIconIndex))
-        let r2 = (box.height * 0.23).rounded()
-        ctx.fillEllipse(in: CGRect(x: (box.midX - r2 * 1.85).rounded(), y: (box.midY - r2).rounded(),
-                                   width: r2 * 2, height: r2 * 2))
-        // The front disc is knocked out of the back one so they read as two.
+        let r2 = (box.height * 0.26).rounded()
+        let back = CGRect(x: (box.midX - r2 * 1.9).rounded(), y: (box.midY - r2).rounded(),
+                          width: r2 * 2, height: r2 * 2)
+        let front = CGRect(x: (box.midX - r2 * 0.1).rounded(), y: (box.midY - r2).rounded(),
+                           width: r2 * 2, height: r2 * 2)
+        ctx.fillEllipse(in: back)
+        // The front disc is knocked out of the back one so they read as two
+        // people rather than as one blob. The knock-out is the front disc grown
+        // by a whole stroke on every side: at the old 1.4 px the seam was
+        // thinner than the ink around it and the two discs fused.
         ctx.setBlendMode(.clear)
-        ctx.fillEllipse(in: CGRect(x: (box.midX - r2 * 0.35).rounded(), y: (box.midY - r2 * 1.2).rounded(),
-                                   width: r2 * 2.4, height: r2 * 2.4))
+        ctx.fillEllipse(in: front.insetBy(dx: -iconStroke, dy: -iconStroke))
         ctx.setBlendMode(.normal)
         ctx.setFillColor(CGColor(gray: 1, alpha: 1))
-        ctx.fillEllipse(in: CGRect(x: (box.midX - r2 * 0.15).rounded(), y: (box.midY - r2).rounded(),
-                                   width: r2 * 2, height: r2 * 2))
+        ctx.fillEllipse(in: front)
 
         // 105 — the caret. 2 points wide (4 device pixels at 2x), which is the
         // width macOS uses and which reads as a caret rather than as a hairline
