@@ -21,12 +21,20 @@ cd "$(dirname "$0")/.."
 # four attempts in a row, each one dying at the first present-timed bench after
 # a clean L1 and a clean headless suite.
 #
-# `-u` declares user activity, which is what resets the idle timer the
-# screensaver counts; `-t` bounds each assertion so a crashed gate cannot leave
-# the machine awake forever, and the loop renews it. This **prevents** a
-# screensaver from starting. It cannot dismiss one that already has — that
-# still needs a human at the machine (PLAN.md environment quirks), and the
-# pre-flight below is what catches it when it happens.
+# `-u` declares user activity and `-t` bounds each assertion so a crashed gate
+# cannot leave the machine awake forever; the loop renews it.
+#
+# **It helps and it is not sufficient, and the difference was measured.** Before
+# it: four attempts, zero that reached the end of a timed bench. After it: four
+# attempts, two that completed the typing bench AND the editor bench at 98-99.6%
+# present delivery. But the fifth aborted anyway, and a screencapture taken
+# while `pmset -g assertions` showed our own `UserIsActive` assertion held
+# caught the screensaver running regardless. So a UserIsActive assertion does
+# not reliably hold off the screensaver on macOS 15, and PLAN.md's rule stands
+# unchanged: a photon bench needs an attended screen, and no amount of
+# `caffeinate` substitutes for one. This raises the odds of a clean run; it does
+# not make one certain, and the pre-flight below is still what catches the case
+# where it did not work.
 #
 # It changes nothing that is measured: it removes an invalid condition rather
 # than affecting a number, which is the same argument the benches' own
