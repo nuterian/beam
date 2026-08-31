@@ -29,11 +29,16 @@ final class EditorBench {
     private var openMs = 0.0
     private var typingCommit: [Double] = []
     private var scrollPresented: [Double] = []
+    private var scrollBurstPresented: [Double] = []
     private var selectPresented: [Double] = []
     private var overlayCommitMs: [Double] = []
     private var tabSwitchPresented: [Double] = []
     private var scrollDroppedPct = 0.0
     private var rssMb = 0.0
+    /// Per-pass input accounting (PLAN.md §5.8). Diagnostic, never gated:
+    /// it says which branch of the hybrid loop produced each pass's samples,
+    /// which is the question a percentile cannot answer.
+    private var passAccounting: [(String, GridView.InputAccounting)] = []
 
     private var filePath = ""
     private var lastProgress = monotonicNow()
@@ -92,6 +97,17 @@ final class EditorBench {
         runKeys(count: 40, gapMs: 23) { [weak self] in self?.beginOpen() }
     }
 
+    /// Start a pass: clear the samples and the accounting together, so the two
+    /// always describe the same window.
+    private func beginPass() {
+        view.recorder.reset()
+        view.resetAccounting()
+    }
+
+    private func endPass(_ name: String) {
+        passAccounting.append((name, view.accounting))
+    }
+
     // MARK: - Passes
 
     /// Opening is measured from the moment the overlay's row is *committed* —
@@ -133,20 +149,59 @@ final class EditorBench {
         doc.caret = doc.buffer.count / 2
         doc.revealCaret(cellWidthPx: app.cellWidthPx, cellHeightPx: app.cellHeightPx,
                         viewportRows: app.viewportRows, viewportCols: app.viewportCols)
-        view.recorder.reset()
+        beginPass()
         runKeys(count: 300, gapMs: 23) { [weak self] in
             guard let self else { return }
             self.drain {
+                self.endPass("typing")
                 self.typingCommit = self.view.recorder.commitSamples
                 self.beginScroll()
             }
         }
     }
 
-    /// Full-speed scrolling: precise wheel deltas at ~120 Hz, faster than any
-    /// trackpad delivers, for two seconds.
+    /// Scrolling, in **two passes**, because one pass was answering two
+    /// different questions with one number (PLAN.md §5.8).
+    ///
+    /// The paced pass sends one wheel event per display frame. That is the
+    /// only rate at which the row's own claim — *a scroll event travels the
+    /// same present path as a keystroke, at the same cost* — is testable at
+    /// all: give the display more events than it has frames and the number
+    /// stops describing Beam and starts describing the refresh rate.
+    ///
+    /// The burst pass then sends them at 8 ms (125 Hz, faster than any trackpad
+    /// delivers) and is judged as what it is: a burst. Roughly half of those
+    /// events cannot be first-in-frame because there is no frame for them, the
+    /// loop coalesces them — correctly, since every delta is applied and the
+    /// picture is complete — and charges the frame its OLDEST pending input,
+    /// which is the worst-case-honest accounting §5-L2 chose on purpose.
+    ///
+    /// Nothing is given up by splitting them, which is the whole argument:
+    /// smooth scrolling under a real trackpad is (a) no skipped frames, gated
+    /// at zero by `scroll_dropped_frames_pct` and measured on the burst pass
+    /// where a skip would actually happen, and (b) the coalesced tail, which
+    /// is now its own gated row instead of being averaged into a claim about
+    /// the present path.
     private func beginScroll() {
-        view.recorder.reset()
+        beginPass()
+        app.doc.scrollPx = 0
+        // 23 ms, the pacing every other presented row in this bench uses. NOT
+        // 16.7: pacing input at exactly the refresh period aliases against it,
+        // and a run then measures the beat rather than the path — which is
+        // precisely what the selection drag at 16 ms was doing.
+        runScroll(count: 150, gapMs: 23) { [weak self] in
+            guard let self else { return }
+            self.drain {
+                self.endPass("scroll (paced)")
+                self.scrollPresented = self.view.recorder.presentedSamples
+                self.beginScrollBurst()
+            }
+        }
+    }
+
+    /// The trackpad's real rate against a 60 Hz panel.
+    private func beginScrollBurst() {
+        beginPass()
         app.doc.scrollPx = 0
         let ticksBefore = view.tickCount
         var landed = 0
@@ -160,7 +215,8 @@ final class EditorBench {
             let ticks = max(1, self.view.tickCount - ticksBefore)
             self.drain {
                 self.view.onEditorPresented = nil
-                self.scrollPresented = self.view.recorder.presentedSamples
+                self.endPass("scroll (burst)")
+                self.scrollBurstPresented = self.view.recorder.presentedSamples
                 // Ticks that produced no presented frame, as a percentage. The
                 // loop coalesces to the display link by design, so a tick with
                 // pending input and no frame is a dropped frame.
@@ -187,11 +243,12 @@ final class EditorBench {
                     .data(using: .utf8)!)
             exit(4)
         }
-        view.recorder.reset()
+        beginPass()
         var left = 60
         func step() {
             guard left > 0 else {
                 drain {
+                    self.endPass("tab switch")
                     self.tabSwitchPresented = self.view.recorder.presentedSamples
                     self.beginSelectDrag()
                 }
@@ -205,15 +262,16 @@ final class EditorBench {
     }
 
     /// A selection drag: mouseDragged events walking down the document, each
-    /// extending the selection by a line.
+    /// extending the selection by a line, one per display frame.
     private func beginSelectDrag() {
         app.doc.scrollPx = 0
         app.doc.placeCaret(at: 0, extend: false)
-        view.recorder.reset()
+        beginPass()
         var step = 0
         func drag() {
             guard step < 200 else {
                 drain {
+                    self.endPass("select drag")
                     self.selectPresented = self.view.recorder.presentedSamples
                     self.beginOverlay()
                 }
@@ -225,7 +283,15 @@ final class EditorBench {
                 + (step % max(1, app.viewportRows))
             sendDrag(row: row, col: 6 + (step % 40), timestamp: t)
             step += 1
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { drag() }
+            // 23 ms, not 16. A 16 ms cadence against a 16.7 ms refresh drifts
+            // by 0.7 ms a step, so roughly one drag in twenty-four lands in a
+            // frame that already carried one and is charged the wait to the
+            // next tick — measured 182 immediate against 19 coalesced, with
+            // the whole p99 coming from those 19. That is a beat frequency
+            // between the bench and the display, not a property of the
+            // selection path, and a row whose tail is decided by it is
+            // measuring the wrong thing (PLAN.md §5.8).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.023) { drag() }
         }
         // A press first, or there is nothing to extend.
         sendMouseDown(row: Scene.topRow, col: 6)
@@ -261,15 +327,16 @@ final class EditorBench {
     }
 
     private func runOverlayPass() {
-        view.recorder.reset()
+        beginPass()
         let query = Array("renderer".utf8)
         var i = 0
         func step() {
             guard i < 120 else {
                 app.closeOverlay()
                 drain {
+                    self.endPass("overlay")
                     self.overlayCommitMs = self.view.recorder.commitSamples
-                    self.beginZoom()
+                    self.beginFind()
                 }
                 return
             }
@@ -278,6 +345,44 @@ final class EditorBench {
             sendKey(String(c))
             i += 1
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { step() }
+        }
+        step()
+    }
+
+    /// Typing a query into find, over the 1 MB document (PLAN.md §5.8).
+    ///
+    /// The megabyte is the point: find re-scans the whole buffer on every
+    /// keystroke, so the row is meaningless against an empty document and
+    /// exactly right against the largest one this bench has. Paced at 23 ms
+    /// like every other keystroke pass, so the number is the scan and not the
+    /// display's refresh rate.
+    private func beginFind() {
+        app.startFind()
+        beginPass()
+        let query = Array("frame".utf8)
+        var i = 0
+        func step() {
+            guard i < 100 else {
+                app.endFind()
+                drain {
+                    self.endPass("find")
+                    self.findCommitMs = self.view.recorder.commitSamples
+                    self.beginZoom()
+                }
+                return
+            }
+            // Backspace the query back to empty every fifth keystroke, so the
+            // pass measures a scan for a ONE-byte query as well as a five-byte
+            // one. A single character matches tens of thousands of times in a
+            // megabyte, and that is the expensive case a query typed only
+            // forwards would never reach.
+            if i % (query.count * 2) >= query.count {
+                sendKey("\u{8}", keyCode: 51)
+            } else {
+                sendKey(String(UnicodeScalar(query[i % query.count])))
+            }
+            i += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.023) { step() }
         }
         step()
     }
@@ -297,11 +402,12 @@ final class EditorBench {
     /// started and every sample is a real rebuild — zooming to a size already
     /// on screen is a no-op the row must not be allowed to average in.
     private func beginZoom() {
-        view.recorder.reset()
+        beginPass()
         var left = 24
         func step() {
             guard left > 0 else {
                 drain {
+                    self.endPass("zoom")
                     self.zoomPresented = self.view.recorder.presentedSamples
                     self.beginZoomedTyping()
                 }
@@ -331,10 +437,11 @@ final class EditorBench {
         doc.caret = doc.buffer.count / 2
         doc.revealCaret(cellWidthPx: app.cellWidthPx, cellHeightPx: app.cellHeightPx,
                         viewportRows: app.viewportRows, viewportCols: app.viewportCols)
-        view.recorder.reset()
+        beginPass()
         runKeys(count: 200, gapMs: 23) { [weak self] in
             guard let self else { return }
             self.drain {
+                self.endPass("zoomed typing")
                 self.zoomedTypingCommit = self.view.recorder.commitSamples
                 // Back to the shipping size, so the RSS and draw-call numbers
                 // reported at the end describe the product's default state.
@@ -425,6 +532,7 @@ final class EditorBench {
         return path
     }
 
+    private var findCommitMs: [Double] = []
     private var zoomPresented: [Double] = []
     private var zoomedTypingCommit: [Double] = []
 
@@ -447,7 +555,7 @@ final class EditorBench {
         window.sendEvent(event)
     }
 
-    private func sendKey(_ c: String? = nil) {
+    private func sendKey(_ c: String? = nil, keyCode: UInt16 = 0) {
         if !window.occlusionState.contains(.visible) && !view.assumeVisible { sawOcclusion = true }
         sentKeys += 1
         let chars = "abcdefghijklmnopqrstuvwxyz0123456789 "
@@ -456,7 +564,7 @@ final class EditorBench {
             with: .keyDown, location: .zero, modifierFlags: [],
             timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber, context: nil,
-            characters: ch, charactersIgnoringModifiers: ch, isARepeat: false, keyCode: 0
+            characters: ch, charactersIgnoringModifiers: ch, isARepeat: false, keyCode: keyCode
         ) else {
             FileHandle.standardError.write("cannot synthesize key event\n".data(using: .utf8)!)
             exit(4)
@@ -585,7 +693,26 @@ final class EditorBench {
         watchdog?.invalidate()
         let total = presentsOK + presentsDropped
         let delivered = total > 0 ? Double(presentsOK) / Double(total) : 0
-        if sawOcclusion || delivered < 0.9 {
+        // **Ground truth decides; the proxy is reported, never a verdict.**
+        //
+        // `NSWindow.occlusionState` has now lied five times (PLAN.md §5-L2,
+        // §5.3, §5.5), and both directions matter here. It reports *occluded*
+        // for any window whose app has not activated — which is most runs on a
+        // machine somebody is using — and it reported *visible* while a
+        // screensaver dropped every present. Only the second direction is
+        // dangerous, and the delivery ratio catches it by construction: an
+        // occluded window's presents are dropped by WindowServer, so fiction
+        // cannot reach 90% delivery. Partial occlusion is bounded by the same
+        // number — a pass that ran occluded contributes all of its presents as
+        // drops, so 90% caps how much of a published run could be fiction at a
+        // tenth of it.
+        //
+        // Keeping the proxy as a hard abort therefore added no safety and
+        // aborted valid runs: measured 2026-08-31, a run at **99% delivery**
+        // (1011 of 1017) refused to publish because the proxy said occluded.
+        // PLAN.md §5.5 already states the general rule — a bench must prove its
+        // frames reached the glass — and this is that rule applied to itself.
+        if delivered < 0.9 {
             FileHandle.standardError.write(String(
                 format: "editor bench INVALID: only %.0f%% of presents reached the glass (%d of %d)%@ — an occluded or asleep screen drops presents and every number here would be fiction\n",
                 delivered * 100, presentsOK, total,
@@ -595,9 +722,11 @@ final class EditorBench {
         }
         // A sample larger than a second is not a latency, it is a broken clock
         // domain. Refuse to publish rather than gate on garbage.
-        for (name, samples) in [("scroll", scrollPresented), ("select", selectPresented),
+        for (name, samples) in [("scroll", scrollPresented),
+                                ("scroll burst", scrollBurstPresented), ("select", selectPresented),
                                 ("typing", typingCommit), ("overlay", overlayCommitMs),
-                                ("tab switch", tabSwitchPresented), ("zoom", zoomPresented),
+                                ("tab switch", tabSwitchPresented), ("find", findCommitMs),
+                                ("zoom", zoomPresented),
                                 ("zoomed typing", zoomedTypingCommit)] {
             if let bad = samples.first(where: { $0 > 1000 || $0 < 0 }) {
                 FileHandle.standardError.write(
@@ -606,20 +735,23 @@ final class EditorBench {
                 exit(4)
             }
         }
-        guard !typingCommit.isEmpty, scrollPresented.count >= 20, !selectPresented.isEmpty,
-              !overlayCommitMs.isEmpty, !tabSwitchPresented.isEmpty,
+        guard !typingCommit.isEmpty, scrollPresented.count >= 20,
+              scrollBurstPresented.count >= 20, !selectPresented.isEmpty,
+              !overlayCommitMs.isEmpty, !tabSwitchPresented.isEmpty, !findCommitMs.isEmpty,
               !zoomPresented.isEmpty, !zoomedTypingCommit.isEmpty else {
             FileHandle.standardError.write(
-                "editor bench: thin pass (typing=\(typingCommit.count) scroll=\(scrollPresented.count) select=\(selectPresented.count) overlay=\(overlayCommitMs.count) tabs=\(tabSwitchPresented.count) zoom=\(zoomPresented.count) zoomedTyping=\(zoomedTypingCommit.count)) — too few presents landed to publish\n"
+                "editor bench: thin pass (typing=\(typingCommit.count) scroll=\(scrollPresented.count) scrollBurst=\(scrollBurstPresented.count) select=\(selectPresented.count) overlay=\(overlayCommitMs.count) tabs=\(tabSwitchPresented.count) zoom=\(zoomPresented.count) zoomedTyping=\(zoomedTypingCommit.count)) — too few presents landed to publish\n"
                     .data(using: .utf8)!)
             exit(4)
         }
         rssMb = currentRSSMB()
         let typing = summarize(typingCommit)
         let scroll = summarize(scrollPresented)
+        let scrollBurst = summarize(scrollBurstPresented)
         let select = summarize(selectPresented)
         let overlay = summarize(overlayCommitMs)
         let tabs = summarize(tabSwitchPresented)
+        let findStats = summarize(findCommitMs)
         let zoom = summarize(zoomPresented)
         let zoomTyping = summarize(zoomedTypingCommit)
         let fps = window.screen?.maximumFramesPerSecond ?? 60
@@ -629,8 +761,10 @@ final class EditorBench {
                      openMs, app.doc.buffer.lineCount))
         print(String(format: "typing in 1 MB doc  n=%d: commit p50 %.2f  p99 %.2f ms",
                      typingCommit.count, typing.p50, typing.p99))
-        print(String(format: "scroll -> presented n=%d: p50 %.2f  p99 %.2f ms   dropped %.2f%% of ticks",
-                     scrollPresented.count, scroll.p50, scroll.p99, scrollDroppedPct))
+        print(String(format: "scroll paced        n=%d: p50 %.2f  p99 %.2f ms",
+                     scrollPresented.count, scroll.p50, scroll.p99))
+        print(String(format: "scroll burst 125Hz  n=%d: p50 %.2f  p99 %.2f ms   dropped %.2f%% of ticks",
+                     scrollBurstPresented.count, scrollBurst.p50, scrollBurst.p99, scrollDroppedPct))
         print(String(format: "select drag         n=%d: p50 %.2f  p99 %.2f ms",
                      selectPresented.count, select.p50, select.p99))
         print(String(format: "tab switch          n=%d: p50 %.2f  p99 %.2f ms  (%d tabs)",
@@ -639,6 +773,8 @@ final class EditorBench {
                      zoomPresented.count, zoom.p50, zoom.p99))
         print(String(format: "typing zoomed in    n=%d: commit p50 %.2f  p99 %.2f ms",
                      zoomedTypingCommit.count, zoomTyping.p50, zoomTyping.p99))
+        print(String(format: "find keystroke      n=%d: commit p50 %.2f  p99 %.2f ms  (1 MB document)",
+                     findCommitMs.count, findStats.p50, findStats.p99))
         print(String(format: "overlay keystroke   n=%d: commit p50 %.2f  p99 %.2f ms  (%d candidates)",
                      overlayCommitMs.count, overlay.p50, overlay.p99, app.fileIndex.paths.count))
         if app.fileIndex.paths.count < Self.treeFiles {
@@ -649,8 +785,17 @@ final class EditorBench {
                     .data(using: .utf8)!)
             exit(4)
         }
+        // The accounting, per pass. Diagnostic only — nothing here is gated —
+        // and it is what turns "this row is a frame high" into a statement
+        // about WHICH branch of the hybrid loop the samples came from.
+        print("input accounting (diagnostic — pass: inputs, immediate, coalesced, tick-accounted, ticks):")
+        for (name, a) in passAccounting {
+            print(String(format: "  %-14@ in %4d  imm %4d  coal %4d  tickAcc %4d  ticks %4d",
+                         name as NSString, a.inputs, a.immediate, a.coalesced, a.tickAccounted, a.ticks))
+        }
         print(String(format: "RSS with the file open: %.1f MB", rssMb))
-        print(String(format: "presents delivered: %.1f%% (%d of %d)", delivered * 100, presentsOK, total))
+        print(String(format: "presents delivered: %.1f%% (%d of %d)%@", delivered * 100, presentsOK, total,
+                     (sawOcclusion ? "   [occlusionState said occluded — reported, not believed]" : "") as NSString))
         print("draw calls per frame: \(view.renderer.drawCallsLastFrame)")
 
         do {
@@ -658,10 +803,12 @@ final class EditorBench {
                 "L2_local_render.open_1mb_file_to_first_paint_ms": openMs,
                 "L2_local_render.keystroke_to_commit_1mb_doc_p99_ms": typing.p99,
                 "L2_local_render.scroll_wheel_to_presented_\(suffix)_p99_ms": scroll.p99,
+                "L2_local_render.pointer_burst_125hz_presented_\(suffix)_p99_ms": scrollBurst.p99,
                 "L2_local_render.scroll_dropped_frames_pct": scrollDroppedPct,
                 "L2_local_render.selection_drag_to_presented_\(suffix)_p99_ms": select.p99,
                 "L2_local_render.tab_switch_to_presented_\(suffix)_p99_ms": tabs.p99,
                 "L2_local_render.overlay_keystroke_to_commit_p99_ms": overlay.p99,
+                "L2_local_render.find_keystroke_to_commit_p99_ms": findStats.p99,
                 "L2_local_render.zoom_step_to_presented_\(suffix)_p99_ms": zoom.p99,
                 "L2_local_render.keystroke_to_commit_zoomed_p99_ms": zoomTyping.p99,
                 "L7_steady_state.rss_with_1mb_file_mb": rssMb,

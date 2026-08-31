@@ -103,6 +103,10 @@ enum Sabotage {
     /// Delays filtering in the open overlay. Proves
     /// `overlay_keystroke_to_commit_p99_ms` can go red.
     static let overlayDelayMs = Int(ProcessInfo.processInfo.environment["BEAM_SABOTAGE_OVERLAY_DELAY_MS"] ?? "") ?? 0
+
+    /// Reddens `find_keystroke_to_commit_p99_ms` — a slow scan on the find
+    /// keystroke path (PLAN.md §5.8).
+    static let findDelayMs = Int(ProcessInfo.processInfo.environment["BEAM_SABOTAGE_FIND_DELAY_MS"] ?? "") ?? 0
     /// Stalls the atlas rebuild a zoom step performs — what a naive
     /// re-rasterization, or one that also recompiled the shader, would feel
     /// like. Proves `zoom_step_to_presented_60hz_p99_ms` can go red.

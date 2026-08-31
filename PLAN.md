@@ -1415,6 +1415,253 @@ changed — `budgets.json` still gates on p50 and p99 by name and §3.1 still
 forbids a mean anywhere near either — and the five cells it gave back are
 exactly what let all six left-hand segments fit at the default window size.
 
+## 5.8 The four red rows, and the two things an editor may never do
+
+§5.7 left the gate at 39 pass / 4 fail, with the decision deliberately handed to
+a session that had not yet argued it. This section is that argument, plus the
+two product gaps that outrank every latency number in this plan: **an editor
+may not lose your work, and an editor without find is not an editor.**
+
+### The four rows were three different problems wearing one costume
+
+The rows were red together and were assumed to share a cause — input arriving
+faster than the display refreshes. A percentile cannot confirm that. It says a
+number is high; it cannot say which branch of the render loop produced it. So
+the first thing built was an instrument rather than a fix: **per-pass input
+accounting** in `GridView` (bench-only, behind `recorder.collectAll`), counting
+for each pass how many inputs were rendered *immediately* and how many were
+*coalesced* to a later tick. One run at 99.7% present delivery settled it:
+
+```
+pass                inputs  immediate  coalesced   what it means
+typing @23 ms          300        300          0   the baseline: every key rendered on arrival
+scroll @8 ms           239          1        238   genuinely 2x the refresh — physics
+tab switch @23 ms       60         27         33   should have been 0
+select drag @16 ms     201        182         19   should have been 0
+overlay @20 ms         120         31         89   should have been 0
+```
+
+Three of the four were not the stated cause at all.
+
+### The defect: an animation frame was closing the frame's input fast path
+
+§5-L2's hybrid loop renders **the first input of each frame** immediately and
+coalesces the rest, which is what keeps ordinary typing off the half-frame tax
+that full coalescing measured (commit p50 0.31 → 9.56 ms). The flag that
+recognises "the first input of each frame" was set by *any* render — including a
+tick that fired only because an animation was running.
+
+So the fast path switched itself off for the whole duration of any animation. A
+keystroke arriving in a frame an animation had already painted was deferred to
+the next tick and charged the wait. The file overlay is where this is worst,
+because its open fade runs for 200 ms and the pass re-arms it faster than it can
+finish: **commit p50 5.24 ms, against 0.33 ms for the identical keystroke pass
+in the document.** The exact tax the hybrid design exists to prevent, in the one
+surface that animates, invisible because no row measured a keystroke *during* an
+animation.
+
+`renderedThisFrame` is now `renderedInputThisFrame` and only an input render
+sets it. The bound that matters is unchanged: sustained input faster than the
+display still produces exactly one input render per frame, so burst coalescing
+and the 2-deep drawable queue are untouched — at most one animation frame and
+one input frame, which is the same pair `wake-double-present` already presents.
+
+After it: tab switch 60/60 immediate, overlay 120/120, drag 198/201, scroll
+(paced) 118/119. **This is a product fix, not a measurement fix** — three rows
+go green because typing during an animation actually got a frame faster.
+
+### Scroll: one row was answering two questions, so it is two rows
+
+Scrolling is the one row where the original diagnosis holds. At 8 ms (125 Hz)
+roughly half of all wheel events *cannot* be first-in-frame, because on a 60 Hz
+panel there is no frame for them. The loop coalesces them — correctly, since
+every delta is applied and the picture on the glass is complete — and charges
+the frame its oldest pending input, which is §5-L2's worst-case-honest
+accounting.
+
+The row's own note says what it is for: *"same budget as the keystroke row
+because it is the same present path"*. That claim is only testable at a rate the
+display can serve. Above it, the number stops describing Beam and starts
+describing the refresh rate. So:
+
+- **`scroll_wheel_to_presented_60hz_p99_ms` keeps its budget — 34 / 38,
+  untouched — and its pass is re-paced to one event per display frame** (23 ms,
+  the pacing every other presented row uses). This is a re-specification in
+  §5.3's sense: the instrument is unchanged, the budget is unchanged, and what
+  the row *claims* is stated correctly instead of being assumed.
+- **`pointer_burst_125hz_presented_60hz_p99_ms` is new**, at 8 ms, and its
+  budget and gate — 44 / 60 — are **inherited verbatim from
+  `burst_125hz_presented_p99_60hz_ms`** rather than chosen. It is the same
+  phenomenon, the same loop, the same accounting and the same panel, differing
+  only in which event drove it, and this project decided what that phenomenon is
+  worth before it had any of these numbers. It exists as its own row because the
+  pointer path is not the key path: the document plane carries the scroll offset
+  in its origin plus a scissor rect (§5.3), so "scrolling falls apart under a
+  real trackpad" deserves measuring rather than assuming.
+
+Nothing is given up by the split, which is the whole argument. Smooth scrolling
+under a real trackpad is two properties: no skipped frames — gated at zero by
+`scroll_dropped_frames_pct`, now measured on the burst pass where a skip could
+actually happen — and the coalesced tail, which is now a gated row instead of
+being averaged into a claim about the present path. Coverage strictly increases
+and no budget moved.
+
+**The selection drag was a bench bug, not a design question.** 16 ms against a
+16.7 ms refresh drifts 0.7 ms a step, so about one drag in twenty-four landed in
+a frame that already carried one — 182 immediate against 19 coalesced, with the
+entire p99 coming from those 19. That is a beat frequency between the bench and
+the display. It is paced at 23 ms now, and the budget did not move.
+
+### A validity rule applied to itself
+
+`--bench-editor` and `--bench-typing` both refused to publish if
+`NSWindow.occlusionState` had *ever* reported occluded, **or** if present
+delivery fell below 90%. The first half is a proxy this plan has discredited
+three times (§5-L2, §5.3, §5.5) and it aborted a valid run mid-session at **99%
+delivery** (1011 of 1017 presents).
+
+Both directions of the lie matter and only one is dangerous. The proxy reports
+*occluded* for any window whose app has not activated — most runs on a machine
+somebody is using — and it reported *visible* while a screensaver dropped every
+present. The delivery ratio catches the dangerous direction by construction: an
+occluded window's presents are dropped by WindowServer, so fiction cannot reach
+90%. Partial occlusion is bounded by the same number, since a pass that ran
+occluded contributes all of its presents as drops — 90% caps how much of a
+published run could be fiction at a tenth of it.
+
+So **ground truth decides and the proxy is reported, never believed.** §5.5
+already states the general rule; this is that rule applied to the benches that
+were still hedging it.
+
+**And `--bench-idle`'s failure message was lying about which guard tripped.** It
+printed a delivery ratio whichever of its two guards failed, so its far more
+common failure — "the caret never pulsed, so there were fewer than ten presents"
+— was reported as *0% of presents reached the glass* and read as occlusion. It
+is not: the caret pulses only while the window is **key** (§5.5), so any focus
+steal produces zero presents in a perfectly visible window. The two guards now
+say different things, and the focus-steal one names the cause.
+
+### It must be impossible to lose the user's work
+
+Two holes, both of which discard work with no prompt and nothing to recover
+from. Both guards are **drawn in the grid**, because §5.4's one load-bearing
+constraint is that no AppKit control lives inside the window — and the reason a
+sheet is especially wrong here is not purity: an alert is a second event loop,
+drawn by another process, whose latency Beam does not control and cannot
+measure, in front of the one product that exists to be measured. A confirmation
+is a question and a short list of answers, which is the overlay mechanism §5.3
+already built. `.confirm` is its fifth kind.
+
+- **⌘W and ⌘Q.** `closeDocument` never looked at `isModified`. ⌘Q is the harder
+  half, because quitting passes through no document's own code path — an editor
+  that guards ⌘W and forgets ⌘Q has guarded the smaller door — so
+  `applicationShouldTerminate` returns `.terminateLater` while the question is
+  on the glass and answers on Beam's own event loop.
+- **Somebody else wrote the file.** `Document.save()` wrote atomically over
+  whatever was there, and atomic only means the write cannot be torn; it says
+  nothing about whether the bytes being replaced are the bytes the document was
+  opened from. A `git checkout`, a rebase, a formatter or the same file open
+  elsewhere replaces them silently. This is the one data loss a user cannot
+  undo, because the losing edit is a legitimate save they asked for.
+
+  Identity is **(modification date, size)**, recorded on open and on save.
+  Not a hash: hashing is O(file) on a path checked on every window activation
+  and before every save, and the pair catches every case that occurs. `save()`
+  refuses when they differ, and `force` — which only the user's own answer
+  grants — is the sole way past.
+
+Three things about the shape of the questions are decisions rather than wording.
+**The safe answer is first**, because it is what `return` takes and what someone
+hitting keys without reading gets; `esc` does nothing at all, which is safer
+still. **The answers are numbered**, so a question is answered by the gesture
+§5.1 already taught for the peer list. And on a disk conflict the first answer
+is **"keep both — save mine beside it"**, which is the only resolution that
+cannot lose anything: every other one throws a version away, and a conflict is
+precisely the moment when the person does not yet know which version they want.
+The document keeps its original path, because the copy is a rescue, not a
+rename.
+
+**On window activation, a clean document reloads silently and a modified one is
+not interrupted.** A clean reload can lose nothing and the file on screen would
+otherwise be a lie. A question thrown up on activation would eat the keystroke
+you came back to type — so the conflict goes to the status line in red, which is
+where §5.3 requires a Local Network denial to appear and for the same reason,
+and the question is asked at ⌘S, which is the moment it is actually about.
+Nothing can be lost in between, because `saveDocument` is the only way to the
+disk. The status line reads a **stored flag**, never `stat`: `diskState` is a
+syscall and the status line is drawn on the keystroke path.
+
+**Proven red the way §3 requires.** The guards are asserted in `--bench-text`,
+the headless suite that runs everywhere; removing the check from `save()` makes
+the suite report *"save REFUSES when the file changed underneath it"* and *"the
+refusal left their bytes on disk untouched"*. A correctness gate that has never
+caught the bug it is about is not a gate.
+
+### Find — and why it is not a bar
+
+`Commands.all` had eighteen entries and none of them searched. An editor without
+find is not an editor.
+
+**Find is a transient mode on the status line, not an overlay and not a bar.**
+An overlay dims the document behind it, which is right when you are choosing
+something to do *to* the document (§5.3) and exactly wrong when the thing you
+are looking for is *in* it — the whole value of highlight-all is seeing where
+the matches are, and a scrim over them defeats it. So the query replaces the
+left-hand run of the one line Beam already had, the count sits beside it because
+"3 of 47" is part of the answer, every visible match fills in a new ink, and
+`esc` leaves. Zero editing rows, zero chrome, zero draw calls, and the document
+is never covered — which is what a find bar spends its whole existence trying to
+get back to and cannot, because it is a bar.
+
+Decisions worth not re-deriving:
+
+- **The current match is the selection**, not a third state. It genuinely is
+  selected, so every key that already works on a selection — type over it, copy
+  it, delete it — works on a search result with no new code and nothing to
+  learn. The other matches get one new palette slot, `#1A3040` (L 0.300 /
+  C 0.040 / H 240, checked for gamut clipping like every entry): selection's own
+  hue one clear lightness step down, so a screen of matches reads as one set
+  with one of them in front.
+- **Highlighting is bounded by the viewport**, exactly as the lexer is (§5.3).
+  The match list is ascending, so a frame takes two binary searches per line and
+  a file with ten thousand matches costs the same frame as one with three.
+- **Literal, not regex.** A regex engine is a dependency and a parser on the
+  keystroke path, and a bad one's failure mode is a pathological backtrack that
+  hangs the editor mid-keystroke — in the product whose entire claim is that a
+  keystroke costs 0.3 ms. Regex joins §1's named list rather than being smuggled
+  in unbudgeted.
+- **Smart case**: a lowercase query matches either case, any uppercase makes it
+  exact. It is the only case rule that needs no control to explain it, and the
+  alternative is a toggle — chrome for a decision the query already contains.
+- **The whole buffer is re-scanned per keystroke, on purpose.** The count is
+  part of the answer and a count that has not counted is a lie. So it is
+  budgeted rather than avoided: `find_keystroke_to_commit_p99_ms` at 4 / 8, the
+  overlay row's numbers, because it is the same class of problem — work with
+  nowhere to live but the keystroke path. Measured in isolation the scan is
+  **869 µs p99 for 1 MB**, one pass of byte compares over `TextBuffer.withRaw`
+  allocating only the match array. The optimisation is on the shelf and
+  deliberately not pre-applied: matches of `ab` are a subset of matches of `a`,
+  so a growing query can filter the previous result instead of re-scanning.
+  Unmeasured optimisations are not something this project merges (§5.1, §5.2).
+
+### What is measured, and what is not
+
+The loop fix is verified by **counts**, which load cannot distort: every pass
+now renders its input on arrival. The isolated find scan (869 µs) was measured
+in a run whose other micro-benchmarks were all at their clean values.
+
+**The gate has not been run clean, and this section does not claim it has.** The
+attempt made at the end of this session ran on a machine at load average 5.9,
+with a browser renderer holding a full core and WindowServer at 50%, and it
+produced exactly the fiction §5.2 already records for that condition: lex-one-
+line max 1954 µs against a clean 8.9, atlas-miss max 4317 against 1267, tab
+switch p50 41.6 with 60 of 60 inputs rendered immediately — a number that is not
+reachable through the code path the counters prove it took. `--bench-idle`
+aborted on a focus steal, correctly, and said so in its new words. Per §3 those
+numbers are not written down anywhere, are not compared to a budget, and are not
+the basis of any decision in this section. **This work is not merged until
+`scripts/gate.sh` is green on an idle, attended machine.**
+
 ## 6. Phases (each ships its benchmarks first; no merge red)
 
 **Phase 0 — Skeleton + harness.** Nothing else starts until green.
@@ -1429,6 +1676,7 @@ exactly what let all six left-hand segments fit at the default window size.
 **Phase 1 — The editor that types faster than anything.** Design of record: §5.3.
 - **Present-path engineering** (the §5-L2 finding): recover the extra frame the naive one-shot present pays — display-link-aligned presents, `presentsWithTransaction`, direct-to-display — each lever accepted or rejected by measurement, photon-verified by camera. Target: 60 Hz presented p50 back under ~13 ms, then ProMotion. **Still open** — the render-loop rework landed (§5-L2) but the extra frame itself has not been cut, and it remains the headline objective.
 - **Done:** gap-buffer text storage with a raw-coordinate line index; real editing on the glyph grid — selection, pixel-quantized scrolling, mouse, undo/redo at depth; single file open/save; a dynamic glyph atlas with LRU eviction and correct one-cell-per-scalar UTF-8; the GUI vocabulary (filled surfaces, gutter, hover, focus, scroll indicator) on two draw calls; the file and peer overlays; presence moved onto the status line.
+- **Find (⌘F / ⌘G), and the two data-loss guards.** Design of record: §5.8.
 - Camera-verified local latency beating every L2 budget on the rig.
 - Syntax highlighting only if it survives the latency gate. **Landed as an incremental line lexer, not tree-sitter** — the reasoning is in §5.3, and §6's original commitment is unchanged: it merges only with L2 still green and is reverted if the L2 rows move.
 - IME milestone begins here (marked-text protocol correct even if compositions render plainly). **Still open.**

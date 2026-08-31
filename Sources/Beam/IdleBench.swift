@@ -66,9 +66,26 @@ final class IdleBench {
                         // measurement of drop-recovery rather than of Beam.
                         let total = self.presentsOK + self.presentsDropped
                         let delivered = total > 0 ? Double(self.presentsOK) / Double(total) : 0
-                        if total < 10 || delivered < 0.9 {
+                        // **Two guards, two different failures, and they must
+                        // not share a message.** The old one printed a delivery
+                        // ratio whichever tripped — so the far more common
+                        // failure, "the caret never pulsed at all", was
+                        // reported as "0% of presents reached the glass" and
+                        // read as occlusion. It is not: the caret pulses only
+                        // while the window is KEY (PLAN.md §5.5), so any focus
+                        // steal produces zero presents in a perfectly visible
+                        // window, and an hour goes into looking for a
+                        // screensaver that was never there.
+                        if total < 10 {
                             FileHandle.standardError.write(String(
-                                format: "idle bench INVALID: %.0f%% of presents reached the glass (%d of %d) — an occluded screen makes the render loop recover, which is the opposite of idle\n",
+                                format: "idle bench INVALID: only %d presents in the whole run — the caret never pulsed, so there was nothing to measure. The caret pulses only while the window is KEY, and this window %@. That is a focus steal, not an occluded screen: quit whatever took activation (two Beam instances cannot both render) and run it attended.\n",
+                                total, self.view?.windowIsKeyNow == true ? "is key now, so it lost key during the run" : "is not key")
+                                .data(using: .utf8)!)
+                            exit(5)
+                        }
+                        if delivered < 0.9 {
+                            FileHandle.standardError.write(String(
+                                format: "idle bench INVALID: only %.0f%% of presents reached the glass (%d of %d) — an occluded screen makes the render loop recover, which is the opposite of idle\n",
                                 delivered * 100, self.presentsOK, total).data(using: .utf8)!)
                             exit(5)
                         }

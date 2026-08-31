@@ -252,4 +252,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// ⌘Q, held behind the same question ⌘W is (PLAN.md §5.8).
+    ///
+    /// This is the harder half of "it must be impossible to lose the user's
+    /// work", because quitting does not pass through any document's own code
+    /// — it goes through the application, so an editor that guards ⌘W and
+    /// forgets ⌘Q has guarded the smaller door. `.terminateLater` is the only
+    /// honest answer while a question is on the glass: the confirmation is
+    /// drawn in Beam's own grid and answered on Beam's own event loop, so the
+    /// verdict arrives asynchronously.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Benches, `--verify-launch` and the headless tools quit themselves on
+        // purpose and have no user to ask. A question raised here would hang
+        // them forever, which is a worse failure than the one it prevents.
+        guard case .normal = config.mode, let app else { return .terminateNow }
+        if app.confirmQuit(then: { ok in
+            NSApp.reply(toApplicationShouldTerminate: ok)
+        }) {
+            return .terminateNow
+        }
+        view?.requestRender()
+        return .terminateLater
+    }
 }

@@ -147,6 +147,28 @@ enum SceneStates {
         let indent = seeded(peers: ["marlowe-air-1180"])
         indent.debugSetOverlay(.indent, query: "", files: [], selection: 4)
 
+        // §5.8's two data-loss guards. Both are drawn in the grid rather than
+        // in an AppKit sheet, so both are surfaces the tools must be able to
+        // show — a designed state nobody can review is a designed state that
+        // rots.
+        let closing = seeded(peers: ["marlowe-air-1180"])
+        closing.doc.debugMarkModified()
+        closing.confirm("save changes to renderer.rs before closing?", choices: [
+            ("save", {}), ("discard changes", {}),
+        ])
+
+        let conflict = seeded(peers: ["marlowe-air-1180"])
+        conflict.doc.debugMarkModified()
+        conflict.doc.hasDiskConflict = true
+        conflict.doc.caret = conflict.doc.offset(line: 9, cellColumn: 16)
+
+        // Find, with the query row on the status line and every match on
+        // screen filled — the surface §5.8 added, and the one that has to be
+        // reviewable by eye because its whole job is where the eye goes.
+        let finding = seeded(peers: ["marlowe-air-1180"])
+        finding.startFind()
+        finding.findType("frame")
+
         let pairing = seeded(peers: ["marlowe-air-1180"])
         pairing.debugSetPairing(host: true)
 
@@ -181,6 +203,9 @@ enum SceneStates {
             state("peers", "⌘K — the same overlay listing peers; a number joins, which is §5.1's gesture one layer in", nearby),
             state("peers-alone", "⌘K — alone on the network: a designed state with its own words, not a blank list", noPeers),
             state("denied", "⌘K — Local Network permission denied; the status line says so in red too, never a silent empty list", denied),
+            state("find", "⌘F — the query on the status line, every visible match filled, the current one selected: no bar, no panel, the document never covered", finding),
+            state("closing", "⌘W with unsaved changes — a confirmation is a question and two rows in the overlay Beam already has, never a sheet", closing),
+            state("conflict", "the file changed on disk while it had unsaved edits: the status line says so in red, and ⌘S asks", conflict),
             state("pairing", "join code — host side (the guest side reads 'waiting for ...')", pairing),
         ]
     }

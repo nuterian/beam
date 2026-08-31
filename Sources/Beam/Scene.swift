@@ -566,6 +566,23 @@ enum Scene {
             if line == caretLine && selection == nil {
                 w.fill(col: L.railCols, row: r, cols: cols - L.railCols, rows: 1, ink: .activeLine)
             }
+            // Find matches, UNDER the selection, because the current match IS
+            // the selection and drawing it twice would double the fill. The
+            // list is bounded to this line's byte range, so a file with ten
+            // thousand matches costs the same frame as one with three — the
+            // viewport rule §5.3 set for the lexer, applied to the same kind of
+            // per-line work (PLAN.md §5.8).
+            if !doc.find.isEmpty {
+                for m in doc.find.matches(in: range) {
+                    let to = min(m + doc.find.query.count, range.upperBound)
+                    let c0 = doc.cellColumn(ofOffset: max(m, range.lowerBound)) - firstCol
+                    let c1 = doc.cellColumn(ofOffset: to) - firstCol
+                    if c1 > c0 {
+                        w.fill(col: L.codeCol + max(0, c0), row: r,
+                               cols: min(c1, L.textCols) - max(0, c0), rows: 1, ink: .match)
+                    }
+                }
+            }
             if let sel = selection, sel.lowerBound <= range.upperBound, sel.upperBound >= range.lowerBound {
                 let from = max(sel.lowerBound, range.lowerBound)
                 let to = min(sel.upperBound, range.upperBound)
@@ -899,7 +916,37 @@ enum Scene {
             }
         }
 
-        if let err = doc.ioError {
+        // **A conflict outranks an I/O error**, because it is the one the user
+        // can still act on and the one that is about to cost them work. Both
+        // are red and both take the whole left-hand run, for the reason §5.3
+        // gives for the Local Network denial: a state that can lose you
+        // something must never be reachable only by trying the thing.
+        //
+        // **Find takes the left run while it is open** (PLAN.md §5.8). It is a
+        // transient mode on the line Beam already had rather than a bar over
+        // the document, because the matches are IN the document and anything
+        // laid over them defeats the point of highlighting them at all. The
+        // count is part of the answer — "3 of 47" is what tells you whether to
+        // keep typing — so it sits beside the query, not somewhere else.
+        if app.isFinding {
+            var c = w.text("find", col: L.codeCol, row: L.statusRow, ink: .faint) + 1
+            c = w.text(String(decoding: doc.find.query, as: UTF8.self),
+                       col: c, row: L.statusRow, ink: .fg)
+            w.put(col: c, row: L.statusRow, glyph: GlyphAtlas.caretGlyphIndex, ink: .caret)
+            c += 3
+            if doc.find.isEmpty {
+                // Nothing typed yet: say what the keys do rather than showing
+                // "0 of 0", which reads as a failed search.
+                w.text("⌘G next · esc done", col: c, row: L.statusRow, ink: .faint)
+            } else if doc.find.count == 0 {
+                w.text("no matches", col: c, row: L.statusRow, ink: .red)
+            } else {
+                let n = w.text("\(doc.find.currentDisplayIndex)", col: c, row: L.statusRow, ink: .dim)
+                w.text(" of \(doc.find.count)", col: n, row: L.statusRow, ink: .faint)
+            }
+        } else if doc.hasDiskConflict {
+            w.text("changed on disk — ⌘S to resolve", col: L.codeCol, row: L.statusRow, ink: .red)
+        } else if let err = doc.ioError {
             w.text(err, col: L.codeCol, row: L.statusRow, ink: .red)
         }
 
@@ -919,7 +966,7 @@ enum Scene {
         // is. See `statusSegments`. It is bounded by where the right-hand run
         // begins, and the right-hand run is never the one that yields.
         let hudSpans = presenceSpans(app, now: now) + hud
-        if doc.ioError == nil {
+        if doc.ioError == nil, !doc.hasDiskConflict, !app.isFinding {
             let limit = hudStartCol(spans: hudSpans, cols: cols) - statusGap
             forEachStatusSegment(app, L, limit: limit) { i, col, seg in
                 let n = seg.text.unicodeScalars.count
@@ -1120,7 +1167,9 @@ enum Scene {
 
     static func overlayWidth(_ kind: AppModel.Overlay) -> Int {
         switch kind {
-        case .peers: return overlayWidth
+        // A question is a sentence, and a sentence needs the sentence width —
+        // the same 64 the Local Network denial established (PLAN.md §5.3).
+        case .peers, .confirm: return overlayWidth
         case .language, .indent: return overlayPickerWidth
         case .files, .commands: return overlayListWidth
         }
@@ -1167,17 +1216,29 @@ enum Scene {
             w.put(col: pcol + width, row: r, glyph: GlyphAtlas.dividerVIndex, ink: .edge)
         }
 
-        let label: String
-        switch kind {
-        case .files: label = "open"
-        case .peers: label = "who's nearby"
-        case .commands: label = "run"
-        case .language: label = "language"
-        case .indent: label = "indent"
+        // **A question replaces the query row rather than sitting above it.**
+        // The row under an overlay's rule is "what are you choosing between",
+        // and for a list that is what you have typed. A confirmation has
+        // nothing to type — so it gets the question there, and no caret,
+        // because a caret in a row that ignores your keystrokes is a lie about
+        // what the next one will do (PLAN.md §5.8).
+        if kind == .confirm {
+            w.text(String(String((app.confirmation?.question ?? "").unicodeScalars.prefix(width - 4))),
+                   col: pcol + 2, row: overlayTopRow + 1, ink: .fg)
+        } else {
+            let label: String
+            switch kind {
+            case .files: label = "open"
+            case .peers: label = "who's nearby"
+            case .commands: label = "run"
+            case .language: label = "language"
+            case .indent: label = "indent"
+            case .confirm: label = ""
+            }
+            var c = w.text(label, col: pcol + 2, row: overlayTopRow + 1, ink: .faint) + 1
+            c = w.text(app.overlayQuery, col: c, row: overlayTopRow + 1, ink: .fg)
+            w.put(col: c, row: overlayTopRow + 1, glyph: GlyphAtlas.caretGlyphIndex, ink: .caret)
         }
-        var c = w.text(label, col: pcol + 2, row: overlayTopRow + 1, ink: .faint) + 1
-        c = w.text(app.overlayQuery, col: c, row: overlayTopRow + 1, ink: .fg)
-        w.put(col: c, row: overlayTopRow + 1, glyph: GlyphAtlas.caretGlyphIndex, ink: .caret)
         // The separator is `dividerH`, not `rule`: `rule` is two device pixels
         // (it is the placeholder the join code's digits land on, where that
         // weight is right) and two hairline weights in one product is a design

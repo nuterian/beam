@@ -118,6 +118,16 @@ final class AppModel {
         /// chrome to the window.
         case language
         case indent
+        /// A question with a short list of answers (PLAN.md §5.8).
+        ///
+        /// A confirmation is a list, so it is the list mechanism — not an
+        /// `NSAlert`. §5.4's one load-bearing constraint is that no AppKit
+        /// control lives inside the window, and the reason a sheet is
+        /// especially wrong here is not purity: an alert is a second event
+        /// loop, drawn by a different process, whose latency Beam does not
+        /// control and cannot measure, in front of the one product that
+        /// exists to be measured. This is two rows and a question.
+        case confirm
     }
 
     /// One row in whichever list the overlay is showing.
@@ -212,6 +222,106 @@ final class AppModel {
     /// regression Phase 2 caught (PLAN.md §5.3).
     var overlayHover = -1
     private(set) var overlayItems: [OverlayItem] = []
+
+    // MARK: - Find (PLAN.md §5.8)
+    //
+    // **Find lives on the status line, not in an overlay**, and that is the one
+    // design decision in it. An overlay dims the document behind it, which is
+    // right when you are choosing something to do *to* the document (§5.3) and
+    // exactly wrong when the thing you are looking for is *in* it — the whole
+    // value of highlight-all is seeing where the matches are, and a scrim over
+    // them defeats it.
+    //
+    // So find is a transient mode on the one line Beam already had, the same
+    // way presence is: the query replaces the left-hand run, the count sits
+    // beside it, every visible match fills, and `esc` leaves. It costs zero
+    // editing rows, zero chrome and zero draw calls, and the document stays
+    // entirely visible — which is what an editor's find bar is always trying to
+    // get back to and never can, because it is a bar.
+    private(set) var isFinding = false
+
+    func startFind() {
+        // Selecting a word and pressing ⌘F should search for it, which is what
+        // every editor does and the one piece of behaviour people notice is
+        // missing. A multi-line selection is not a search term.
+        if let sel = doc.selection, sel.count <= 200 {
+            let bytes = doc.buffer.bytes(in: sel)
+            if !bytes.contains(0x0A) { doc.find.setQuery(bytes, buffer: doc.buffer, caret: sel.lowerBound) }
+        }
+        isFinding = true
+        onNeedsRender?()
+    }
+
+    func endFind() {
+        guard isFinding else { return }
+        isFinding = false
+        // The query is kept, so ⌘G still steps through the same matches after
+        // you have left the mode — which is the whole reason ⌘G exists as a
+        // separate binding from ⌘F.
+        onNeedsRender?()
+    }
+
+    func findType(_ s: String) {
+        if Sabotage.findDelayMs > 0 { usleep(UInt32(Sabotage.findDelayMs) * 1000) }
+        var q = doc.find.query
+        q.append(contentsOf: Array(s.utf8))
+        doc.find.setQuery(q, buffer: doc.buffer, caret: doc.caret)
+        revealCurrentMatch()
+    }
+
+    func findBackspace() {
+        var q = doc.find.query
+        guard !q.isEmpty else { return }
+        // One SCALAR, not one byte: backspacing half of a multi-byte character
+        // leaves a query that can never match anything and looks like the
+        // editor eating your keystrokes.
+        var s = String(decoding: q, as: UTF8.self)
+        if !s.isEmpty { s.removeLast(); q = Array(s.utf8) } else { q.removeLast() }
+        doc.find.setQuery(q, buffer: doc.buffer, caret: doc.caret)
+        revealCurrentMatch()
+    }
+
+    /// ⌘G / ⇧⌘G, and `return` / `⇧return` while finding.
+    func findStep(_ delta: Int) {
+        guard !doc.find.isEmpty else { return }
+        if doc.find.matches.isEmpty { doc.find.rescan(doc.buffer, near: doc.caret) }
+        doc.find.step(delta)
+        revealCurrentMatch()
+    }
+
+    /// Put the caret on the current match, select it, and scroll it into view.
+    ///
+    /// **Selecting it is what makes find useful rather than decorative**: the
+    /// match is then the selection, so every key that already works on a
+    /// selection — type over it, copy it, delete it — works on a search result
+    /// with no new code and nothing new to learn.
+    private func revealCurrentMatch() {
+        guard let r = doc.find.currentRange else { onNeedsRender?(); return }
+        doc.placeCaret(at: r.lowerBound, extend: false)
+        doc.placeCaret(at: r.upperBound, extend: true)
+        doc.revealCaret(cellWidthPx: cellWidthPx, cellHeightPx: cellHeightPx,
+                        viewportRows: viewportRows, viewportCols: viewportCols)
+        onNeedsRender?()
+    }
+
+    // MARK: - Confirmation (PLAN.md §5.8)
+
+    /// A question Beam is holding an irreversible action behind.
+    struct Confirmation {
+        let question: String
+        /// The answers, in the order they are offered. **The safe answer is
+        /// first**, because it is the one `return` takes and the one a person
+        /// hitting keys without reading gets — and `esc` (closing the overlay
+        /// without choosing) does nothing at all, which is safer still.
+        let choices: [(title: String, run: () -> Void)]
+    }
+    private(set) var confirmation: Confirmation?
+
+    /// Ask, drawn in the grid. Answering runs the choice; `esc` runs nothing.
+    func confirm(_ question: String, choices: [(title: String, run: () -> Void)]) {
+        confirmation = Confirmation(question: question, choices: choices)
+        openOverlay(.confirm)
+    }
     /// A designed empty state, as its own paragraph — never a blank list.
     private(set) var overlayEmptyLines: [(String, Renderer.Ink)] = []
 
@@ -303,10 +413,38 @@ final class AppModel {
         selectDocument((activeIndex + delta + documents.count) % documents.count)
     }
 
-    /// Closes a tab. The last one is never closed — it is emptied, so Beam
-    /// always has a document, which is what "the launch screen is a document"
-    /// means when you close the last file.
+    /// Closes a tab, **asking first if it would throw work away** (PLAN.md §5.8).
+    ///
+    /// This is the worst bug the product had: ⌘W on a modified document
+    /// discarded the edits with no prompt and no undo — the edits were not
+    /// anywhere else, so there was nothing to recover them from. Every other
+    /// latency claim in this plan is worth nothing in an editor that loses what
+    /// you typed.
     func closeDocument(at i: Int) {
+        guard i >= 0, i < documents.count else { return }
+        let d = documents[i]
+        guard d.isModified else { return forceCloseDocument(at: i) }
+        confirm("save changes to \(d.displayName) before closing?", choices: [
+            ("save", { [weak self] in
+                guard let self else { return }
+                // Save can itself refuse — the file may have changed under us —
+                // and then the tab must STAY OPEN. Closing a document whose
+                // save failed is the same data loss by a longer route.
+                self.saveDocument(d) { ok in
+                    guard ok, let j = self.documents.firstIndex(where: { $0 === d }) else { return }
+                    self.forceCloseDocument(at: j)
+                }
+            }),
+            ("discard changes", { [weak self] in
+                guard let self, let j = self.documents.firstIndex(where: { $0 === d }) else { return }
+                self.forceCloseDocument(at: j)
+            }),
+        ])
+    }
+
+    /// Closes without asking. The tail of `closeDocument`, and what the
+    /// confirmation's answers call once the question is settled.
+    func forceCloseDocument(at i: Int) {
         guard i >= 0, i < documents.count else { return }
         if documents.count == 1 {
             documents = [Document()]
@@ -318,6 +456,125 @@ final class AppModel {
             activeIndex = min(activeIndex > i ? activeIndex - 1 : activeIndex, documents.count - 1)
         }
         onNeedsRender?()
+    }
+
+    // MARK: - Saving (PLAN.md §5.8)
+
+    /// Save, and if the file changed on disk since it was opened, **ask**.
+    ///
+    /// `Document.save()` writes atomically over whatever is there, and atomic
+    /// only means the write cannot be torn — it says nothing about whether the
+    /// bytes being replaced are the bytes this document was opened from. A
+    /// `git checkout`, a rebase, a formatter or the same file open elsewhere
+    /// replaces them silently, and an unguarded save then destroys that work
+    /// with a buffer that never saw it. That is the one data loss a user cannot
+    /// undo, because the losing edit is a legitimate save they asked for.
+    ///
+    /// `then` reports whether the file is now on disk, so callers that were
+    /// only saving on the way to something else (closing a tab, quitting) do
+    /// not do that something else when the save did not happen.
+    func saveDocument(_ d: Document, then: ((Bool) -> Void)? = nil) {
+        if d.save() {
+            onNeedsRender?()
+            then?(true)
+            return
+        }
+        guard d.diskState == .modified else {
+            // A real I/O failure — no permission, no disk. `ioError` is already
+            // on the status line; there is no question to ask.
+            onNeedsRender?()
+            then?(false)
+            return
+        }
+        confirm("\(d.displayName) changed on disk since you opened it.", choices: [
+            // Safest first: keeping BOTH versions is the only answer that
+            // cannot lose anything, so it is what `return` does.
+            ("keep both — save mine beside it", { [weak self] in
+                guard let self else { return }
+                let ok = d.saveCopyBesideOriginal()
+                self.onNeedsRender?()
+                // Not `true`: the document the caller asked to save is still
+                // unsaved and still differs from the disk. A close that
+                // proceeded here would throw away the tab that knows which
+                // file the copy belongs to.
+                then?(false)
+                _ = ok
+            }),
+            ("overwrite what is on disk", { [weak self] in
+                guard let self else { return }
+                let ok = d.save(force: true)
+                self.onNeedsRender?()
+                then?(ok)
+            }),
+            ("discard mine and reload theirs", { [weak self] in
+                guard let self else { return }
+                _ = d.revert()
+                self.onNeedsRender?()
+                then?(true)
+            }),
+        ])
+    }
+
+    /// ⌘Q. Returns true if it is safe to quit right now; otherwise it puts the
+    /// question on the glass and calls `then` when the answer is in.
+    ///
+    /// Quitting is where an unsaved-changes prompt matters most and where it is
+    /// most often missing, because ⌘Q does not go through any document's own
+    /// code path — it goes through the application.
+    func confirmQuit(then: @escaping (Bool) -> Void) -> Bool {
+        let dirty = documents.filter { $0.isModified }
+        guard !dirty.isEmpty else { return true }
+        let what = dirty.count == 1
+            ? "\(dirty[0].displayName) has unsaved changes."
+            : "\(dirty.count) documents have unsaved changes."
+        confirm(what + " quit anyway?", choices: [
+            ("save all, then quit", { [weak self] in
+                guard let self else { return then(false) }
+                // Sequential, and it stops at the first one that cannot be
+                // saved — with that document brought to the front, so the
+                // question the next prompt asks is about a file you can see.
+                self.saveAll(Array(dirty), then: then)
+            }),
+            ("discard changes and quit", { then(true) }),
+        ])
+        return false
+    }
+
+    private func saveAll(_ remaining: [Document], then: @escaping (Bool) -> Void) {
+        guard let d = remaining.first else { return then(true) }
+        if let i = documents.firstIndex(where: { $0 === d }) { selectDocument(i) }
+        saveDocument(d) { [weak self] ok in
+            guard let self, ok else { return then(false) }
+            self.saveAll(Array(remaining.dropFirst()), then: then)
+        }
+    }
+
+    /// The disk changed underneath an open document (PLAN.md §5.8).
+    ///
+    /// Called on window activation, which is when a `git checkout` or another
+    /// editor's write has just happened and when a person is looking.
+    ///
+    /// **Clean documents reload silently.** There is nothing to lose, the file
+    /// on screen would otherwise be a lie, and every editor does this.
+    /// **Dirty documents are not interrupted.** A question thrown up on
+    /// activation would eat the keystroke you came back to type; instead the
+    /// conflict goes to the status line in red — the same place §5.3 requires a
+    /// Local Network denial to appear, for the same reason — and the question
+    /// is asked at ⌘S, which is the moment it is actually about. Nothing can be
+    /// lost in between, because `saveDocument` is the only way to the disk.
+    func refreshFromDisk() {
+        var changed = false
+        for d in documents where d.diskState == .modified {
+            if d.isModified {
+                // Conflicted. Recorded once, here, so the status line can say
+                // so without asking the filesystem on every frame.
+                if !d.hasDiskConflict { d.hasDiskConflict = true; changed = true }
+                continue
+            }
+            _ = d.revert()
+            changed = true
+        }
+        if changed { onNeedsRender?() }
     }
 
     func startDiscovery() {
@@ -375,6 +632,8 @@ final class AppModel {
 
     func closeOverlay() {
         guard overlay != nil else { return }
+        // `esc` on a question is "never mind", and it must leave nothing armed.
+        if overlay == .confirm { confirmation = nil }
         overlay = nil
         overlayHover = -1
         onOverlayChanged?()
@@ -445,6 +704,18 @@ final class AppModel {
             doc.setIndent(tabs: ind.tabs, width: ind.width)
             onNeedsRender?()
             return true
+        case .confirm:
+            guard let c = confirmation, overlaySelection < c.choices.count else { return false }
+            let run = c.choices[overlaySelection].run
+            confirmation = nil
+            closeOverlay()
+            // After the overlay is closed, so an action that asks a FOLLOW-UP
+            // question (save-then-close, when the save finds the file changed
+            // underneath it) opens its own overlay rather than being closed by
+            // the one it came from.
+            run()
+            onNeedsRender?()
+            return true
         }
     }
 
@@ -512,6 +783,15 @@ final class AppModel {
                     return OverlayItem(title: group + c.title, commandID: c.id, shortcut: c.shortcut)
                 }
             overlayEmptyLines = [("no command matches.", .dim)]
+        case .confirm:
+            // Numbered, so a question is answered by the same gesture §5.1
+            // gave the peer list: a digit, a click, or return on the row you
+            // are already on. The answers are not filtered — a question has
+            // the answers it has, and typing into it means nothing.
+            overlayItems = (confirmation?.choices ?? []).enumerated().map { i, c in
+                OverlayItem(title: c.title, number: i + 1)
+            }
+            overlayEmptyLines = []
         case .language:
             // Every language the lexer has a table for, plus the one that turns
             // highlighting off. Adding a language is data (BeamCore.Lexer), and
@@ -825,7 +1105,7 @@ final class AppModel {
         case .files:
             overlayItems = files.map { OverlayItem(title: $0, path: $0) }
             overlayEmptyLines = [("nothing matches.", .dim)]
-        case .peers, .commands, .language, .indent:
+        case .peers, .commands, .language, .indent, .confirm:
             rebuildOverlayItems()
         }
     }

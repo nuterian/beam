@@ -40,6 +40,69 @@ public final class Document {
     /// instead of the document silently being the wrong thing.
     public private(set) var ioError: String?
 
+    // MARK: - What is on disk (PLAN.md §5.8)
+    //
+    // `save()` writes atomically over whatever is there. Atomic means the write
+    // cannot be torn; it says nothing about whether the bytes it replaces are
+    // the bytes this document was opened from. A `git checkout`, a rebase, a
+    // formatter, or the same file open in another editor all replace them
+    // silently, and Beam would then overwrite that work with a buffer that
+    // never saw it — the one kind of data loss a user cannot undo, because the
+    // losing edit is a legitimate save they asked for.
+    //
+    // Identity is (modification date, size). Not a hash: hashing is O(file) on
+    // a path that is checked on every window activation and before every save,
+    // and the pair catches every case that matters. A rewrite that preserves
+    // both to the nanosecond is not something to design against; a rewrite that
+    // preserves neither is what actually happens.
+
+    /// What the file looked like the last time this document and the disk
+    /// agreed — set on open and on save, and nowhere else.
+    public struct DiskStamp: Equatable {
+        public let modified: Date
+        public let size: Int
+    }
+    public private(set) var diskStamp: DiskStamp?
+
+    /// Someone else wrote this file while it had unsaved edits here.
+    ///
+    /// A **stored flag, not a question asked per frame**: `diskState` is a
+    /// `stat`, and the status line is drawn on the keystroke path. It is set by
+    /// `AppModel.refreshFromDisk` on window activation — a transition, a few
+    /// times a minute — and cleared by whatever resolves the conflict.
+    /// Settable from the app layer because `AppModel.refreshFromDisk` is the
+    /// one place that decides a conflict exists — the document itself never
+    /// polls the disk.
+    public var hasDiskConflict = false
+
+    /// Find state, per document (PLAN.md §5.8). Per document rather than per
+    /// window for the same reason each tab keeps its own buffer, undo stack and
+    /// token cache: switching tabs is a pointer change, and a find that
+    /// followed you between files would be answering a question about a
+    /// document you are no longer looking at.
+    public var find = FindState()
+
+    /// Reads the file's current identity, or nil if it is gone.
+    public static func stamp(ofPath p: String) -> DiskStamp? {
+        guard let a = try? FileManager.default.attributesOfItem(atPath: p),
+              let m = a[.modificationDate] as? Date, let n = a[.size] as? Int else { return nil }
+        return DiskStamp(modified: m, size: n)
+    }
+
+    /// How the file on disk differs from what this document was opened from.
+    public enum DiskState: Equatable {
+        case unchanged
+        case modified   // someone else wrote it
+        case deleted    // it is not there any more
+        case untracked  // never saved, or opened before stamps existed
+    }
+
+    public var diskState: DiskState {
+        guard let p = path, let known = diskStamp else { return .untracked }
+        guard let now = Self.stamp(ofPath: p) else { return .deleted }
+        return now == known ? .unchanged : .modified
+    }
+
     /// Cells a tab advances to. Real source has tabs in it, and a tab that does
     /// not advance the grid is the same corruption class as the UTF-8 bug.
     ///
@@ -138,6 +201,11 @@ public final class Document {
         }
         buffer = TextBuffer(bytes: [UInt8](data))
         path = p
+        // Stamped from the file we just read, so a write that lands between
+        // the read and the stamp shows up as a difference rather than being
+        // adopted as ours.
+        diskStamp = Self.stamp(ofPath: p)
+        hasDiskConflict = false
         isModified = false
         ioError = nil
         caret = 0
@@ -150,14 +218,27 @@ public final class Document {
         return true
     }
 
+    /// Save, refusing to overwrite somebody else's work.
+    ///
+    /// `force` is what the user's own confirmation grants, and it is the only
+    /// way past the check — there is no path where Beam decides on its own
+    /// that the other write did not matter.
     @discardableResult
-    public func save() -> Bool {
+    public func save(force: Bool = false) -> Bool {
         guard let p = path else { ioError = "no path — this document has never been saved"; return false }
+        if !force, diskState == .modified {
+            ioError = "\((p as NSString).lastPathComponent) changed on disk"
+            return false
+        }
         let data = Data(buffer.bytes(in: 0..<buffer.count))
         do {
             try data.write(to: URL(fileURLWithPath: p), options: .atomic)
             isModified = false
             ioError = nil
+            // Re-stamp from the file, never from what we believe we wrote: the
+            // modification date is the filesystem's to decide.
+            diskStamp = Self.stamp(ofPath: p)
+            hasDiskConflict = false
             undo.breakCoalescing()
             return true
         } catch {
@@ -166,12 +247,58 @@ public final class Document {
         }
     }
 
+    /// The answer that cannot lose anything: write this buffer to a new file
+    /// beside the original and leave the original as whoever else wrote it.
+    ///
+    /// Every other resolution throws one of the two versions away. This one is
+    /// offered first for that reason — a conflict is a moment when the person
+    /// does not yet know which version they want, and an editor's job at that
+    /// moment is to stop being the reason a choice is irreversible.
+    ///
+    /// The document *keeps its original path*: the copy is a rescue, not a
+    /// rename, and silently repointing the tab at a file the user never named
+    /// would leave them editing something they did not open.
+    @discardableResult
+    public func saveCopyBesideOriginal() -> String? {
+        guard let p = path else { return nil }
+        let ns = p as NSString
+        let ext = ns.pathExtension
+        let base = ns.deletingPathExtension
+        // A counter, because the second conflict on the same file must not
+        // overwrite the rescue from the first one.
+        for n in 1...999 {
+            let suffix = n == 1 ? "conflict" : "conflict-\(n)"
+            let candidate = ext.isEmpty ? "\(base).\(suffix)" : "\(base).\(suffix).\(ext)"
+            guard !FileManager.default.fileExists(atPath: candidate) else { continue }
+            let data = Data(buffer.bytes(in: 0..<buffer.count))
+            guard (try? data.write(to: URL(fileURLWithPath: candidate), options: .atomic)) != nil else {
+                ioError = "cannot write \((candidate as NSString).lastPathComponent)"
+                return nil
+            }
+            ioError = "saved a copy as \((candidate as NSString).lastPathComponent)"
+            return candidate
+        }
+        ioError = "too many conflict copies beside \(ns.lastPathComponent)"
+        return nil
+    }
+
+    /// Re-read the file from disk, discarding this document's edits. The other
+    /// half of the external-modification answer: keep mine, or take theirs.
+    @discardableResult
+    public func revert() -> Bool {
+        guard let p = path else { return false }
+        return open(path: p)
+    }
+
     /// Seeds a document without touching the disk — the seam `--dump-scene`
     /// and `--screenshot` use so both tools show the shipping layout on a
     /// machine with no file and no GPU (PLAN.md §5.2).
     public func debugLoad(text: String, name: String) {
         buffer = TextBuffer(bytes: Array(text.utf8))
         path = name
+        // No disk behind a seeded document, so no stamp: `diskState` reports
+        // `.untracked` and the guards stay out of the way of the tools.
+        diskStamp = nil
         isModified = false
         caret = 0
         anchor = nil
@@ -179,6 +306,12 @@ public final class Document {
         highlighter.reset(language: .forPath(name), buffer: buffer)
         detectFormat()
     }
+
+    /// Seeds the modified flag for the visual tools, with no edit behind it —
+    /// `--dump-scene` and `--screenshot` need to show a document that has
+    /// unsaved changes without inventing an edit that would move the caret and
+    /// the line index out from under the seeded layout.
+    public func debugMarkModified() { isModified = true }
 
     // MARK: - Editing
 
@@ -194,6 +327,12 @@ public final class Document {
         anchor = nil
         desiredColumn = nil
         isModified = true
+        // **An edit moves every offset after it**, so the match list is stale
+        // the instant the buffer changes. Re-scanning here would put find on
+        // the typing path for everyone, including the people not searching; the
+        // honest cheap answer is to re-scan only while find is actually open,
+        // which is a state the user chose and a cost they can see.
+        if !find.isEmpty { find.rescan(buffer, near: caret) }
         if recordUndo { undo.record(edit, caretBefore: before, caretAfter: caret) }
         highlighter.invalidate(line: line, buffer: buffer, linesAdded: addedLines - removedLines)
         return edit

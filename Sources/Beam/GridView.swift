@@ -72,7 +72,24 @@ final class GridView: NSView {
         let remote: Bool
     }
     private var displayLink: CADisplayLink?
-    private var renderedThisFrame = false
+    /// Has an *input* already been rendered in this frame?
+    ///
+    /// **The word that matters is "input".** §5-L2's hybrid loop renders the
+    /// first input of each frame immediately and coalesces the rest, so that
+    /// ordinary typing never pays the half-frame tax that full coalescing
+    /// measured (commit p50 0.31 -> 9.56 ms). This flag is how "the first input
+    /// of each frame" is recognised — and it used to be set by *any* render,
+    /// including a tick that fired only because an animation was running.
+    ///
+    /// The effect was that the fast path switched itself off for the whole
+    /// duration of any animation: a keystroke arriving in a frame an
+    /// animation had already painted was deferred to the next tick and charged
+    /// the wait. Measured in the file overlay, whose open fade runs for 200 ms
+    /// and was re-armed faster than it could finish: commit p50 **5.24 ms**
+    /// against **0.33 ms** for the identical keystroke pass in the document —
+    /// the exact tax the hybrid design exists to prevent, in the one surface
+    /// that animates. See PLAN.md §5.8.
+    private var renderedInputThisFrame = false
     private var dirty = false
     /// Oldest unpresented input — carried into the next render so coalesced or
     /// recovered keystrokes record their true (worst-case) latency.
@@ -115,6 +132,10 @@ final class GridView: NSView {
     /// Cached rather than polled. `NSWindow.isKeyWindow` is an AppKit call, and
     /// an AppKit call on a 60 Hz tick is a 60 Hz AppKit call.
     private var windowIsKey = false
+    /// Read by `--bench-idle`, which needs to tell a focus steal apart from an
+    /// occluded screen: the caret pulses only while the window is key, so a
+    /// stolen focus produces no presents in a perfectly visible window.
+    var windowIsKeyNow: Bool { windowIsKey }
     /// Wakes the loop at the start of the next ramp. Between ramps the display
     /// link is **paused**, which is the difference between a blink that costs a
     /// 60 Hz callback for ten seconds and one that costs eight ticks a second.
@@ -258,6 +279,15 @@ final class GridView: NSView {
                 [weak self] _ in
                 guard let self else { return }
                 self.windowIsKey = window.isKeyWindow
+                // **Becoming key is when the disk gets re-checked** (PLAN.md
+                // §5.8). It is exactly the moment a `git checkout` or another
+                // editor's write has just happened and a person is looking at
+                // the result — and it costs one `stat` per open document, on a
+                // transition that happens a few times a minute, so there is
+                // nothing to poll and nothing to watch. A clean document
+                // reloads silently; a modified one is left alone and says so
+                // on the status line, because the question belongs at ⌘S.
+                if self.windowIsKey { self.app.refreshFromDisk() }
                 self.nextCaretChangeAt = 0
                 // Losing focus should settle the caret solid, not freeze it
                 // wherever the pulse happened to be.
@@ -314,6 +344,11 @@ final class GridView: NSView {
             // other input — otherwise the repaint is untimed and
             // `overlay_keystroke_to_commit_p99_ms` measures nothing.
             overlayKey(event, t0: t0)
+            noteInput(t0: t0, remote: false)
+            return
+        }
+        if app.isFinding {
+            findKey(event, t0: t0)
             noteInput(t0: t0, remote: false)
             return
         }
@@ -521,6 +556,33 @@ final class GridView: NSView {
         requestRender()
     }
 
+    /// Keys while find is open (PLAN.md §5.8).
+    ///
+    /// The same shape as `overlayKey`: everything is either a query character
+    /// or a way out, and `esc` always leaves. Find is a mode, and the only
+    /// modes Beam has are ones you can always press `esc` to get out of.
+    private func findKey(_ event: NSEvent, t0: Double) {
+        _ = t0
+        switch event.keyCode {
+        case 53:                                                // esc
+            app.endFind()
+            return
+        case 36:                                                // return
+            // ⇧return steps back, the way ⇧⌘G does — the same gesture without
+            // moving your hand off the query.
+            app.findStep(event.modifierFlags.contains(.shift) ? -1 : 1)
+            return
+        case 51: app.findBackspace(); return                    // delete
+        case 125: app.findStep(1); return                       // down
+        case 126: app.findStep(-1); return                      // up
+        default: break
+        }
+        guard let chars = event.characters, !chars.isEmpty else { return }
+        let printable = String(chars.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 })
+        guard !printable.isEmpty else { return }
+        app.findType(printable)
+    }
+
     /// Keys while an overlay is open. Every one of them is either a filter
     /// character or a way out — an overlay you cannot leave with `esc` is a
     /// mode, and Beam does not have modes.
@@ -537,13 +599,20 @@ final class GridView: NSView {
         guard let chars = event.characters, !chars.isEmpty else { return }
         // A digit in the PEER list is the join gesture — §5.1's "a number joins
         // that peer", kept exactly, one layer in. The file list has no numbers,
-        // so a digit there is just a digit to search with.
-        if app.overlay == .peers, let scalar = chars.unicodeScalars.first,
+        // so a digit there is just a digit to search with. A confirmation's
+        // answers are numbered for the same reason the peers are: it is the
+        // gesture this product already taught.
+        if app.overlay == .peers || app.overlay == .confirm,
+           let scalar = chars.unicodeScalars.first,
            scalar.value >= 49, scalar.value <= 57 {
             app.overlaySelect(Int(scalar.value) - 49)
             app.overlayCommit()
             return
         }
+        // **A question does not have a query.** Typing into a confirmation
+        // would filter the answers to nothing and leave a person looking at an
+        // empty panel wondering what they broke; the answers are the answers.
+        guard app.overlay != .confirm else { return }
         let printable = String(chars.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 })
         guard !printable.isEmpty else { return }
         app.overlayType(printable)
@@ -897,6 +966,28 @@ final class GridView: NSView {
         noteInput(t0: event.timestamp, remote: false)
     }
 
+    // MARK: - Input accounting (bench only)
+    //
+    // Three presented rows measured a whole frame above their budget and the
+    // candidate explanation — the loop charging a coalesced frame its OLDEST
+    // pending input, which is the worst-case-honest accounting §5-L2 chose on
+    // purpose — is not something a percentile can confirm or refute. A
+    // percentile says a number is high; it cannot say which branch of the loop
+    // produced it. These counters make the accounting itself observable, so
+    // the decision belongs to data rather than to a theory about the loop.
+    //
+    // Bench-only by guard, not by taste: the product path must not pay even an
+    // increment for a diagnostic (`collectAll` is already the bench flag).
+    struct InputAccounting {
+        var inputs = 0        // noteInput calls that reached a live window
+        var immediate = 0     // rendered on the input itself, first of its frame
+        var coalesced = 0     // deferred to a tick, charged to the OLDEST pending
+        var tickAccounted = 0 // tick renders that carried a pending t0
+        var ticks = 0         // display-link ticks in the window
+    }
+    private(set) var accounting = InputAccounting()
+    func resetAccounting() { accounting = InputAccounting() }
+
     /// One input, local or remote, entering the hybrid loop.
     func noteInput(t0: Double, remote: Bool) {
         let visible = isOnGlass
@@ -908,6 +999,7 @@ final class GridView: NSView {
             caretWake = nil
         }
         let cold = displayLink?.isPaused ?? true
+        if recorder.collectAll { accounting.inputs += 1 }
         pendingIsStatusOnly = false
         if !visible {
             // Occluded: presents are guaranteed drops — paint on reveal. The
@@ -923,18 +1015,20 @@ final class GridView: NSView {
             // 92 ms deadline-driven vs. one tick here). The recorder dedupes
             // by t0, so whichever present lands first records the sample.
             render(t0: t0, remote: remote)
-            renderedThisFrame = true
+            renderedInputThisFrame = true
             dirty = true
             if pending == nil { pending = PendingInput(t0: t0, remote: remote) }
-        } else if !renderedThisFrame {
+        } else if !renderedInputThisFrame {
             // Warm, first input of this frame: render now — coalescing every
             // keystroke to the tick taxes normal typing a half-frame
             // (measured: paced commit p50 0.3 -> 9.6 ms when fully coalesced).
-            renderedThisFrame = true
+            renderedInputThisFrame = true
+            if recorder.collectAll { accounting.immediate += 1 }
             render(t0: t0, remote: remote)
         } else {
             // Warm, already rendered this frame: coalesce (burst input).
             dirty = true
+            if recorder.collectAll { accounting.coalesced += 1 }
             if pending == nil { pending = PendingInput(t0: t0, remote: remote) }
         }
         if visible { resumeDisplayLink() }
@@ -993,7 +1087,8 @@ final class GridView: NSView {
             return
         }
         tickCount += 1
-        renderedThisFrame = false
+        if recorder.collectAll { accounting.ticks += 1 }
+        renderedInputThisFrame = false
         let now = monotonicNow()
         // Fades are finite: this keeps the link awake for ~200 ms and then it
         // pauses like any other quiet period. Nothing in Beam animates forever.
@@ -1008,7 +1103,17 @@ final class GridView: NSView {
             pendingIsStatusOnly = false
             let p = pending
             pending = nil
-            renderedThisFrame = true
+            // Only an input render closes the frame's fast path. A tick that
+            // fires for an animation, a status value or drop recovery carries
+            // no t0, and treating it as "this frame already rendered" is what
+            // deferred real keystrokes behind a fade (see the flag's own note).
+            // The bound is unchanged where it matters: sustained input faster
+            // than the display still produces exactly one input render per
+            // frame, so burst coalescing and the 2-deep drawable queue are
+            // untouched — at most one animation frame and one input frame,
+            // which is the same pair wake-double-present already presents.
+            if p != nil { renderedInputThisFrame = true }
+            if recorder.collectAll, p != nil { accounting.tickAccounted += 1 }
             // A status frame gets no drop recovery here either. Recovery
             // resumes the display link, and resuming it once per RTT update was
             // enough to keep the loop awake for the entire quiet window —

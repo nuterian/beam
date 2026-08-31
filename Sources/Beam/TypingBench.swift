@@ -191,7 +191,26 @@ final class TypingBench {
         watchdog?.invalidate()
         let total = presentsOK + presentsDropped
         let delivered = total > 0 ? Double(presentsOK) / Double(total) : 0
-        if sawOcclusion || delivered < 0.9 {
+        // **Ground truth decides; the proxy is reported, never a verdict.**
+        //
+        // `NSWindow.occlusionState` has now lied five times (PLAN.md §5-L2,
+        // §5.3, §5.5), and both directions matter here. It reports *occluded*
+        // for any window whose app has not activated — which is most runs on a
+        // machine somebody is using — and it reported *visible* while a
+        // screensaver dropped every present. Only the second direction is
+        // dangerous, and the delivery ratio catches it by construction: an
+        // occluded window's presents are dropped by WindowServer, so fiction
+        // cannot reach 90% delivery. Partial occlusion is bounded by the same
+        // number — a pass that ran occluded contributes all of its presents as
+        // drops, so 90% caps how much of a published run could be fiction at a
+        // tenth of it.
+        //
+        // Keeping the proxy as a hard abort therefore added no safety and
+        // aborted valid runs: measured 2026-08-31, a run at **99% delivery**
+        // (1011 of 1017) refused to publish because the proxy said occluded.
+        // PLAN.md §5.5 already states the general rule — a bench must prove its
+        // frames reached the glass — and this is that rule applied to itself.
+        if delivered < 0.9 {
             // Latency numbers from an occluded window are fiction. Refuse to
             // publish rather than gate on garbage.
             FileHandle.standardError.write(String(
@@ -230,7 +249,8 @@ final class TypingBench {
         line("first key after idle   ", idlePresented)
         print(String(format: "malloc per keystroke: %.0f bytes, %.1f blocks", mallocBytesPerKey, mallocBlocksPerKey))
         print("draw calls per frame: \(view.renderer.drawCallsLastFrame)")
-        print(String(format: "presents delivered: %.1f%% (%d of %d)", delivered * 100, presentsOK, total))
+        print(String(format: "presents delivered: %.1f%% (%d of %d)%@", delivered * 100, presentsOK, total,
+                     (sawOcclusion ? "   [occlusionState said occluded — reported, not believed]" : "") as NSString))
 
         do {
             try writeResult(to: outPath, metrics: [

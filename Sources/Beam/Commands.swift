@@ -57,7 +57,11 @@ enum Commands {
             $0.app.openOverlay(.files)
         },
         Command(id: "file.save", title: "Save", group: .file, key: "s", modifiers: [.command]) { view in
-            _ = view.app.doc.save()
+            // Through the model, never straight to `Document.save()`: the model
+            // is where the "this file changed on disk" question lives, and a
+            // second caller that skipped it would be a second way to destroy
+            // somebody else's work (PLAN.md §5.8).
+            view.app.saveDocument(view.app.doc)
             view.app.doc.undo.breakCoalescing()
             view.requestRender()
         },
@@ -83,6 +87,23 @@ enum Commands {
         Command(id: "edit.redo", title: "Redo", group: .edit, key: "z", modifiers: [.command, .shift]) {
             $0.applyHistory(redo: true)
         },
+        // Find (PLAN.md §5.8). ⌘F opens it, ⌘G steps — and ⌘G works whether or
+        // not the query row is open, which is exactly why the two are separate
+        // bindings and why leaving find keeps the query.
+        Command(id: "edit.find", title: "Find…", group: .edit, key: "f", modifiers: [.command]) { view in
+            guard view.app.overlay == nil, view.app.surface == .editor else { return }
+            view.app.startFind()
+        },
+        Command(id: "edit.findNext", title: "Find Next", group: .edit, key: "g", modifiers: [.command]) { view in
+            guard view.app.surface == .editor else { return }
+            view.app.findStep(1)
+        },
+        Command(id: "edit.findPrevious", title: "Find Previous", group: .edit, key: "g",
+                modifiers: [.command, .shift]) { view in
+            guard view.app.surface == .editor else { return }
+            view.app.findStep(-1)
+        },
+
         Command(id: "edit.selectAll", title: "Select All", group: .edit, key: "a", modifiers: [.command]) { view in
             guard view.app.overlay == nil, view.app.surface == .editor else { return }
             view.app.doc.selectAll()

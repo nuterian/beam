@@ -268,12 +268,126 @@ enum TextBench {
                   "and deriving the cell did not move the shipping one (got \(shipping.cellWidthPx)x\(shipping.cellHeightPx), baseline \(shipping.baselinePx))")
         }
 
+        // MARK: - Find's scan, in isolation (PLAN.md §5.8)
+        //
+        // `find_keystroke_to_commit_p99_ms` measured 9.25 ms p50 against a 4 ms
+        // budget, with p50 and p99 within 0.2 ms of each other — a flat
+        // distribution, which is the signature of a constant cost rather than
+        // of a loaded machine. This isolates it: same process, same run, same
+        // machine as the other micro-benchmarks above, so it can be read
+        // RELATIVE to them even when the machine is busy.
+        var findScanUs: [Double] = []
+        do {
+            var text = ""
+            text.reserveCapacity(1_100_000)
+            let unit = """
+            pub fn render_frame(&mut self, n: usize) -> Result<(), Error> {
+                let frame = self.next_frame()?;
+                for i in 0..n { frame.push(self.atlas.glyph(i), 0xFF); }
+                Ok(())
+            }
+
+            """
+            while text.utf8.count < 1_000_000 { text += unit }
+            let buf = TextBuffer(bytes: Array(text.utf8))
+            // Both ends of the range a real query covers: one byte (tens of
+            // thousands of hits) and five (a handful).
+            for q in ["f", "frame"] {
+                var find = FindState()
+                for _ in 0..<20 {
+                    let t = monotonicNow()
+                    find.setQuery(Array(q.utf8), buffer: buf, caret: 0)
+                    findScanUs.append((monotonicNow() - t) * 1_000_000)
+                }
+                check(find.count > 0, "the find fixture has matches for \(q)")
+            }
+        }
+
+        // MARK: - The data-loss guards (PLAN.md §5.8)
+        //
+        // Headless, in the suite that always runs, because this is the one
+        // class of bug where a regression is not a slow frame but somebody's
+        // work. Every assertion below is about a path that ENDS in a write.
+        do {
+            let dir = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("beam-disk-guard-\(getpid())")
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let path = (dir as NSString).appendingPathComponent("guard.txt")
+
+            func write(_ text: String) {
+                try? Data(text.utf8).write(to: URL(fileURLWithPath: path))
+            }
+
+            write("theirs\n")
+            let d = Document()
+            check(d.open(path: path), "the guard fixture opens")
+            check(d.diskState == .unchanged, "a freshly opened document agrees with the disk")
+
+            // An edit here, a write there. The whole point.
+            d.perform(Edit(offset: 0, removed: [], inserted: Array("mine ".utf8)))
+            check(d.isModified, "an edit marks the document modified")
+            // The modification date has a filesystem's resolution, so a write
+            // in the same instant can carry the same timestamp. The SIZE moves
+            // too, which is exactly why identity is the pair and not the date.
+            write("theirs, rewritten by somebody else\n")
+            check(d.diskState == .modified, "a write by somebody else is seen")
+
+            check(!d.save(), "save REFUSES when the file changed underneath it")
+            check(String(decoding: (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data(),
+                         as: UTF8.self) == "theirs, rewritten by somebody else\n",
+                  "and the refusal left their bytes on disk untouched")
+
+            // The answer that cannot lose anything.
+            let copy = d.saveCopyBesideOriginal()
+            check(copy != nil, "keep-both writes a copy")
+            if let copy {
+                check(String(decoding: (try? Data(contentsOf: URL(fileURLWithPath: copy))) ?? Data(),
+                             as: UTF8.self).hasPrefix("mine "),
+                      "the copy holds OUR version")
+                check(d.path == path, "and the document keeps the path the user opened, not the rescue's")
+            }
+            check(String(decoding: (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data(),
+                         as: UTF8.self) == "theirs, rewritten by somebody else\n",
+                  "keep-both left the original alone")
+
+            // Forcing is the only way past, and it re-stamps so the next save
+            // is ordinary again.
+            check(d.save(force: true), "an explicit overwrite goes through")
+            check(d.diskState == .unchanged, "and re-stamps, so the next save asks nothing")
+            check(!d.isModified, "a successful save clears the modified flag")
+            check(d.save(), "an ordinary save after that needs no force")
+
+            // Reverting is the other half of the answer.
+            write("theirs again\n")
+            d.perform(Edit(offset: 0, removed: [], inserted: Array("x".utf8)))
+            check(d.revert(), "revert re-reads the file")
+            check(String(decoding: Data(d.buffer.bytes(in: 0..<d.buffer.count)), as: UTF8.self)
+                    == "theirs again\n", "and the buffer is now what is on disk")
+            check(!d.isModified && d.diskState == .unchanged, "and the document agrees with the disk again")
+
+            // A document that has never been saved has no disk to conflict
+            // with, and must not be dragged through any of this.
+            let untitled = Document()
+            check(untitled.diskState == .untracked, "an untitled document is untracked")
+            check(!untitled.save(), "and cannot be saved, because it has no path")
+
+            // Deletion is its own state: it is NOT 'unchanged', and a save that
+            // treated it as unchanged would silently recreate a file the user
+            // deleted on purpose without ever saying so.
+            let gone = Document()
+            write("here\n")
+            check(gone.open(path: path), "a second document opens the fixture")
+            try? FileManager.default.removeItem(atPath: path)
+            check(gone.diskState == .deleted, "a deleted file reads as deleted, not as unchanged")
+        }
+
         if !failures.isEmpty {
             FileHandle.standardError.write(
                 ("text bench FAILED:\n  " + failures.joined(separator: "\n  ") + "\n").data(using: .utf8)!)
             exit(4)
         }
-        print("correctness: 10 groups pass (buffer fuzz, utf-8, undo/redo, coalescing, columns, lexer, shell states, remote edits, caret curve, the 1:2 cell at every zoom step)")
+        print("correctness: 11 groups pass (buffer fuzz, utf-8, undo/redo, coalescing, columns, lexer, shell states, remote edits, caret curve, the 1:2 cell at every zoom step, the disk guards)")
 
         // MARK: - Micro-budgets
 
@@ -349,6 +463,9 @@ enum TextBench {
                      undoUs.count, undoStats.p50, undoStats.p99, undoStats.max))
         print(String(format: "lex one line      n=%d: p50 %.1f  p99 %.1f  max %.1f us",
                      lexUs.count, lexStats.p50, lexStats.p99, lexStats.max))
+        print(String(format: "find scan 1 MB    n=%d: p50 %.1f  p99 %.1f  max %.1f us  (diagnostic)",
+                     findScanUs.count, percentile(findScanUs, 50), percentile(findScanUs, 99),
+                     findScanUs.max() ?? 0))
         print(String(format: "atlas miss        n=%d: p50 %.1f  p99 %.1f  max %.1f us",
                      missUs.count, missStats.p50, missStats.p99, missStats.max))
 

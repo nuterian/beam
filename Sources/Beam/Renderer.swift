@@ -84,6 +84,13 @@ final class Renderer {
         case synPunct = 26
         case synOperator = 27
 
+        /// Every OTHER match of the find query (PLAN.md §5.8). The *current*
+        /// match is the selection, because it genuinely is selected — so this
+        /// slot is only ever the ones you have not stepped to yet, and it has
+        /// to sit clearly under `selection` or the eye cannot tell which one
+        /// `return` will take you to.
+        case match = 28
+
         static let peerCount = 6
         static func peer(_ i: Int) -> Ink {
             Ink(rawValue: UInt16(6 + ((i % peerCount) + peerCount) % peerCount)) ?? .peer0
@@ -341,6 +348,8 @@ final class Renderer {
         (.synFunction, SIMD3(0.856, 0.849, 0.970), "#DAD9F7  L0.895 C0.042 H288  13.7:1 — a name being called: the SAME hue as a keyword at a much lighter weight, so the pair reads as one family with two roles. They were 0.045 L apart and indistinguishable; 0.140 apart they are obvious without spending a second hue"),
         (.synPunct,   SIMD3(0.506, 0.528, 0.560), "#81878F  L0.620 C0.014 H258   5.2:1 — brackets and separators step back"),
         (.synOperator,SIMD3(0.655, 0.691, 0.744), "#A7B0BE  L0.755 C0.022 H258   8.7:1 — operators sit just under body text"),
+
+        (.match,     SIMD3(0.010, 0.030, 0.051), "#1A3040  L0.300 C0.040 H240  fg on it 11.8:1 — a find match that is not the current one. The SAME hue as selection at 0.08 less lightness and a shade less chroma: one family, two ranks, so a screen of matches reads as one set with one of them in front. Checked for gamut clipping like every other entry (in gamut). Under selection by a clear step and above activeLine by one, which is the ordering the eye has to be able to resolve at a glance while scrolling."),
     ]
 
     /// The palette table as a Metal `constant` array. Generated rather than
