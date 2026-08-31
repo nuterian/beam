@@ -237,6 +237,13 @@ final class EditorBench {
     /// keystroke path because there is nowhere else to put it.
     private func beginOverlay() {
         sendMouseUp()
+        // **Back to the sample file first**, so the scan root is the tree root
+        // and not wherever the tab pass happened to leave the front document.
+        // The candidate set is the whole point of this row; letting an earlier
+        // pass decide it makes the number depend on the order of the passes.
+        if let i = app.documents.firstIndex(where: { $0.path == filePath }) {
+            app.selectDocument(i)
+        }
         app.openOverlay(.files)
         awaitScan { self.runOverlayPass() }
     }
@@ -387,7 +394,14 @@ final class EditorBench {
                           contents: Data("// \(i)\n".utf8))
         }
 
-        let path = (root as NSString).appendingPathComponent("src/renderer.rs")
+        // **At the tree ROOT, not inside `src/`.** The open overlay scans the
+        // directory holding the current document, so where the sample file
+        // lives decides how many candidates the overlay row is measured
+        // against. From `src/` the walk reaches `src` and `src/render` — about
+        // half the tree — and the row would quietly understate the cost it
+        // exists to bound, while the guard at the end of the run failed with a
+        // number nobody could explain.
+        let path = (root as NSString).appendingPathComponent("renderer.rs")
         let unit = """
         /// Encode one frame — the hot path for module %d.
         pub fn render_%d(&mut self, n: usize) -> Result<(), Error> {
@@ -496,6 +510,29 @@ final class EditorBench {
         // number, because that guard exists.
         cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
         cg.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: Double(dy))
+        // **And a location, because a CGEvent created without one carries the
+        // CURRENT MOUSE POSITION.** The event's location is what decides which
+        // view AppKit hands it to, so until this line the scroll pass only
+        // measured anything when the person at the machine happened to have
+        // left the pointer over the window — measured 2026-08-31: the pointer
+        // sat at screen y 732 against a 640-point window, every event missed
+        // the content view, `scrollWheel` was never called once, and the run
+        // recorded zero samples. It had passed an hour earlier on the same code
+        // with the pointer somewhere else.
+        //
+        // The mouse passes never had this problem because `NSEvent.mouseEvent`
+        // takes an explicit location and window number; there is no such
+        // factory for a precise-delta scroll, which is why this one goes
+        // through CGEvent at all.
+        //
+        // An NSEvent built from a CGEvent has window number 0, and AppKit then
+        // reads `locationInWindow` as a point in the window's own coordinates —
+        // so the value to write here is the window point we want, flipped into
+        // Quartz's top-left-origin global space.
+        if let content = window.contentView, let screen = NSScreen.screens.first {
+            cg.location = CGPoint(x: content.bounds.midX,
+                                  y: screen.frame.maxY - content.bounds.midY)
+        }
         guard let event = NSEvent(cgEvent: cg) else { return }
         window.sendEvent(event)
     }
