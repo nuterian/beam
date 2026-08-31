@@ -77,6 +77,18 @@ final class GlyphAtlas {
     /// the join screen as well as code, so it is set to a designed 1.30: enough
     /// air that a list reads as a list, still dense enough to be an editor. It is
     /// a whole-pixel number after rounding, by construction.
+    ///
+    /// **1.36 was tried against Zed's and VS Code's 1.4...1.5 and rejected.** At
+    /// the shipping em (28 px at 2x) it rounds to a 38 px cell against 36, which
+    /// on the screenshots bought a barely perceptible amount of air — the block
+    /// comment read marginally more like a paragraph — for 5.6% of the editing
+    /// rows on screen, the scarcest resource in the product. It also costs
+    /// something the number does not show: 1.30 is the value that makes the cell
+    /// exactly **18x36, a clean 1:2**, and §5.4's rail icons are square paths
+    /// drawn across *two* adjacent cells precisely because a cell is half a
+    /// square. At 18x38 a two-cell span is 36x38 and the only shape an icon can
+    /// be no longer fits its own box. A line-height change here is a geometry
+    /// change over in the chrome, and the air it buys is not worth it.
     static let lineHeightEm: CGFloat = 1.30
 
     /// The grid's metrics, computed from CoreText alone — no Metal, no window,

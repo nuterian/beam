@@ -165,6 +165,46 @@ final class Renderer {
     /// field, so a slow ramp has no steps in it.
     static let caretPeriod: Float = 1.2
 
+    /// How hard the blink's cosine is shaped before it is clamped. It decides
+    /// the whole feel of the caret, and it decides the bench row: the curve is
+    /// flat wherever the clamp bites, and §5.5's tick sleeps through flat
+    /// stretches, so **gain is inversely proportional to the number of presents
+    /// a blinking caret costs.**
+    ///
+    /// It exists as a named constant because **the two evaluations of this
+    /// curve had drifted apart.** The blink is computed twice on purpose: the
+    /// shader draws it, and `GridView.caretAlpha` re-derives it on the CPU as a
+    /// *change detector*, so a tick that would look identical presents nothing
+    /// and `GridView.secondsUntilCurveMoves` can sleep through the flat parts.
+    /// Both CPU functions are written for a gain of **6** —
+    /// `clamp(c * 3 + 0.5)` is `c · 6 · 0.5 + 0.5`, and the sleep threshold is
+    /// spelled `acos(1.0 / 6.0)`. The shader was written for **3**. They were
+    /// two different curves.
+    ///
+    /// The arithmetic, since a number this load-bearing should not be a guess.
+    /// `s` saturates where `|cos| >= 1/g`, so a period is flat for
+    /// `2·acos(1/g)/π` of its length and ramps for the rest:
+    ///
+    ///     g = 3.0   clamps at |cos| > 1/3   flat 78%   ramp 130 ms
+    ///     g = 6.0   clamps at |cos| > 1/6   flat 89%   ramp  64 ms
+    ///
+    /// So the CPU slept through stretches — everything between |cos| = 1/6 and
+    /// 1/3 — in which the shader's alpha was still climbing, and the ramp the
+    /// user saw was drawn in coarse steps rather than over four frames. The
+    /// second row is also what §5.5 describes in prose ("flat for 89% of its
+    /// period", "about 64 ms", "roughly seven presents a second rather than
+    /// sixty"), and it is strictly *less* work than the first — fewer presents,
+    /// longer sleeps — which is the only direction `caret_blink_cpu_pct_core`
+    /// can move. Making the shader agree with the scheduler is therefore both
+    /// the correctness fix and the cheap one. 64 ms is still four frames: a
+    /// ramp, not a square wave, so it settles rather than flickers.
+    static let caretGain: Float = 6.0
+    /// The dimmest the caret ever gets. Never zero, for the same reason a fade
+    /// never starts at zero (PLAN.md §5.2): the caret is the pixel you are
+    /// hunting for, and one that is genuinely invisible for half a second is
+    /// one you lose.
+    static let caretFloor: Float = 0.12
+
     static let maxInstances = 200 * 120 + 512
     private static let ringDepth = 3
 
@@ -257,11 +297,11 @@ final class Renderer {
     /// plain text instead of to a random colour.
     static let palette: [(ink: Ink, srgb: SIMD3<Float>, note: String)] = [
         (.fg,        SIMD3(0.890, 0.911, 0.941), "#E3E8F0  L0.930 C0.012 H258  15.4:1 — primary text: the thing you are reading"),
-        (.red,       SIMD3(0.966, 0.311, 0.267), "#F64F44  L0.660 C0.205 H28    5.5:1 — over budget, and the presence line's failure states"),
-        (.green,     SIMD3(0.383, 0.838, 0.568), "#62D691  L0.790 C0.145 H155  10.4:1 — under budget: the HUD's resting state"),
+        (.red,       SIMD3(0.939, 0.450, 0.424), "#EF736C  L0.700 C0.155 H25    6.6:1 — over budget, and the presence line's failure states"),
+        (.green,     SIMD3(0.359, 0.722, 0.563), "#5CB890  L0.715 C0.108 H163   7.9:1 — under budget: the HUD's RESTING state, and resting is the operative word. At the old 10.4:1 a latency readout was the loudest non-fg thing in an idle editor, which is exactly how a HUD comes to look like debug output (PLAN.md §5.2). It now sits beside dim (7.1:1) instead of above it"),
         (.dim,       SIMD3(0.598, 0.623, 0.661), "#989FA9  L0.700 C0.016 H258   7.1:1 — secondary text: labels, the filename, your own caret"),
-        (.faint,     SIMD3(0.370, 0.397, 0.436), "#5E656F  L0.505 C0.018 H258   3.2:1 — tertiary hints and the line-number gutter"),
-        (.accent,    SIMD3(0.137, 0.789, 0.985), "#23C9FB  L0.780 C0.142 H225   9.8:1 — reserved: the \"beam\" mark and the join code, nothing else"),
+        (.faint,     SIMD3(0.460, 0.488, 0.528), "#757C87  L0.585 C0.018 H258   4.5:1 — tertiary: the line-number gutter, an inactive tab, the caret position, the shortcut column. Lifted from #5E656F/3.2:1, which was BELOW AA on a slot doing seven jobs — an inactive tab label was dimmer than a code comment, and the gutter was 4.8x dimmer than the code it indexes. 4.5:1 is exactly AA and still four steps under fg"),
+        (.accent,    SIMD3(0.400, 0.830, 0.989), "#66D4FC  L0.820 C0.115 H225  11.2:1 — reserved: the \"beam\" mark and the join code, nothing else"),
         (.peer0,     SIMD3(0.954, 0.566, 0.598), "#F39098  L0.760 C0.120 H15    8.4:1 — a warm red"),
         (.peer1,     SIMD3(0.869, 0.649, 0.322), "#DDA552  L0.760 C0.120 H75    8.7:1 — amber"),
         (.peer2,     SIMD3(0.563, 0.762, 0.451), "#90C273  L0.760 C0.120 H135   9.2:1 — leaf"),
@@ -271,24 +311,24 @@ final class Renderer {
 
         // Surfaces. Contrast quoted is fg ON the surface, which is the number
         // that decides whether text over a fill stays readable.
-        (.surface,   SIMD3(0.109, 0.128, 0.158), "#1C2128  L0.245 C0.016 H258  fg on it 13.2:1 — an overlay's own plane, one step above the ground"),
+        (.surface,   SIMD3(0.137, 0.160, 0.194), "#232931  L0.278 C0.018 H258  fg on it 12.0:1 — an overlay's own plane, and the active tab's fill. Measured off the pixels: the scrim composites the document down to #030508, and the old #1C2128 panel cleared that by only 1.26:1 — with no border, the code the panel truncates read as BROKEN text rather than as occluded text. Now 1.39:1"),
         (.scrim,     SIMD3(0.009, 0.013, 0.022), "#020306  L0.100 C0.010 H258  — laid over the document at ~72% so the overlay is the only lit thing"),
-        (.selection, SIMD3(0.016, 0.236, 0.355), "#043C5A  L0.340 C0.075 H240  fg on it  9.5:1 — selection, in the accent's hue family so it reads as Beam's"),
-        (.activeLine,SIMD3(0.084, 0.101, 0.125), "#151A20  L0.215 C0.014 H258  fg on it 14.3:1 — the caret's row: barely there, and that is the point"),
-        (.hover,     SIMD3(0.163, 0.181, 0.208), "#2A2E35  L0.300 C0.014 H258  fg on it 11.1:1 — the pointer is over this row"),
-        (.edge,      SIMD3(0.185, 0.200, 0.224), "#2F3339  L0.320 C0.012 H258   1.5:1 — hairlines and the scroll indicator: structure, not ink"),
-        (.caret,     SIMD3(0.696, 0.954, 1.000), "#B1F3FF  L0.930 C0.075 H225  15.5:1 — your caret: brighter than body text and cooler, in the accent's hue family, so the one pixel you are always hunting for is the most findable thing on screen"),
+        (.selection, SIMD3(0.170, 0.273, 0.345), "#2B4658  L0.380 C0.045 H240  fg on it  8.1:1 — selection: the accent's hue at a THIRD the chroma of the old #043C5A. A saturated fill behind text is the single most dated thing a dark editor does; a lighter, greyer slate reads as the text being lifted rather than as the text being painted over"),
+        (.activeLine,SIMD3(0.093, 0.110, 0.135), "#181C22  L0.225 C0.014 H258  fg on it 13.9:1 — the caret's row: barely there, and that is the point"),
+        (.hover,     SIMD3(0.180, 0.201, 0.232), "#2E333B  L0.320 C0.016 H258  fg on it 10.3:1 — the pointer is over this row. Hover is always drawn ON surface, never on the ground, so it has to clear surface, and it has to stay clearly under selection: the old pair sat 0.04 apart in L and read as the same weight in two tints"),
+        (.edge,      SIMD3(0.225, 0.241, 0.265), "#393D44  L0.360 C0.012 H258   1.9:1 vs the ground, 1.35:1 on surface — hairlines and the scroll indicator: structure, not ink, so the number that matters is contrast against what it DIVIDES, not fg on it. One device pixel has to work harder than a fill to be seen at all, which is why edge sits above every surface it separates"),
+        (.caret,     SIMD3(0.765, 0.965, 1.000), "#C3F6FF  L0.940 C0.053 H210  16.2:1 — your caret. The old #B1F3FF was **out of gamut**: its declared L0.930 C0.075 H225 clipped the blue channel and actually rendered as L0.925 C0.067 H210, so the table documented a colour the GPU never drew, and at 15.5:1 against fg's 15.4:1 it was not in any measurable sense brighter than body text. This is the largest chroma reachable at L0.940 on H210 — the hue the old one really landed on — which keeps the caret findable by HUE (on a screen of near-white text a near-white caret is findable only by shape, which was tried and looked worse) while making it, for the first time, genuinely the brightest value in the frame. Shape, width, hard edges and the absence of position easing are untouched: those were already right"),
 
         // Syntax. One band, low chroma, plain `fg` still the majority colour on
         // any real screen of code — colour is a modifier here, not a rainbow.
-        (.synKeyword, SIMD3(0.826, 0.642, 0.868), "#D3A4DD  L0.780 C0.095 H320   9.1:1 — keywords"),
-        (.synType,    SIMD3(0.853, 0.762, 0.516), "#D9C284  L0.820 C0.085 H90   10.9:1 — types and capitalised identifiers"),
-        (.synString,  SIMD3(0.614, 0.819, 0.616), "#9DD19D  L0.810 C0.090 H145  10.8:1 — strings and characters"),
-        (.synNumber,  SIMD3(0.931, 0.717, 0.575), "#EDB793  L0.820 C0.080 H55   10.7:1 — numbers"),
-        (.synComment, SIMD3(0.355, 0.427, 0.431), "#5B6D6E  L0.520 C0.022 H200   3.5:1 — comments: the one token type that recedes"),
-        (.synFunction,SIMD3(0.627, 0.800, 0.980), "#A0CCFA  L0.830 C0.080 H250  11.3:1 — a name being called or declared"),
-        (.synPunct,   SIMD3(0.529, 0.551, 0.584), "#878D95  L0.640 C0.014 H258   5.6:1 — brackets and separators step back"),
-        (.synOperator,SIMD3(0.625, 0.674, 0.746), "#9FACBE  L0.740 C0.030 H258   8.2:1 — operators sit just under body text"),
+        (.synKeyword,  SIMD3(0.706, 0.636, 0.923), "#B4A2EB  L0.755 C0.105 H295   8.4:1 — keywords: the one token kind allowed to be a colour"),
+        (.synType,    SIMD3(0.677, 0.863, 0.776), "#ADDCC6  L0.855 C0.058 H165  12.5:1 — types: the keyword hue at LESS THAN A THIRD its chroma. Types are the most frequent coloured token in typed code, so they get the least chroma — the old #D9C284 inverted that and made the commonest thing the loudest"),
+        (.synString,  SIMD3(0.921, 0.690, 0.588), "#EBB096  L0.805 C0.078 H45   10.1:1 — strings and characters: the literal voice"),
+        (.synNumber,  SIMD3(0.945, 0.769, 0.692), "#F1C4B0  L0.855 C0.058 H45   12.0:1 — numbers: the SAME hue as strings, half the chroma. A number and a string are both literal data; the old table put them 35 degrees apart, which is far enough to be noise and close enough to be indistinguishable"),
+        (.synComment, SIMD3(0.412, 0.442, 0.486), "#69717C  L0.545 C0.020 H258   3.8:1 — comments: the one token type that recedes, now in the GROUND's own hue rather than a teal-grey that read as a sixth colour"),
+        (.synFunction, SIMD3(0.856, 0.849, 0.970), "#DAD9F7  L0.895 C0.042 H288  13.7:1 — a name being called: the SAME hue as a keyword at a much lighter weight, so the pair reads as one family with two roles. They were 0.045 L apart and indistinguishable; 0.140 apart they are obvious without spending a second hue"),
+        (.synPunct,   SIMD3(0.506, 0.528, 0.560), "#81878F  L0.620 C0.014 H258   5.2:1 — brackets and separators step back"),
+        (.synOperator,SIMD3(0.655, 0.691, 0.744), "#A7B0BE  L0.755 C0.022 H258   8.7:1 — operators sit just under body text"),
     ]
 
     /// The palette table as a Metal `constant` array. Generated rather than
@@ -327,9 +367,12 @@ final class Renderer {
 
     // The caret's blink, evaluated on the GPU from one float.
     //
-    // A cosine shaped by a gain and clamped: it dwells fully on, dwells nearly
-    // off, and moves between the two over about a tenth of a second — a hard
-    // square wave flickers and a plain sine never looks settled. It never
+    // A cosine shaped by `caretGain` and clamped: it dwells fully on, dwells
+    // nearly off, and moves between the two over 64 ms — a hard square wave
+    // flickers and a plain sine never looks settled. The gain is a named
+    // constant rather than a literal here because `GridView` re-derives this
+    // same curve to decide when it may sleep, and the two had drifted to
+    // different gains; see `Renderer.caretGain`. It never
     // reaches zero (floor 0.12) for the same reason a fade never starts at zero
     // (PLAN.md §5.2): the caret is the pixel you are hunting for, and a caret
     // that is genuinely invisible for half a second is a caret you lose.
@@ -337,8 +380,8 @@ final class Renderer {
     inline float caretAlpha(float t) {
         if (t < 0.0) return 1.0;
         float c = cos(t * 6.28318530718 / \(caretPeriod));
-        float s = clamp(c * 3.0 * 0.5 + 0.5, 0.0, 1.0);
-        return mix(0.12, 1.0, s);
+        float s = clamp(c * \(caretGain) * 0.5 + 0.5, 0.0, 1.0);
+        return mix(\(caretFloor), 1.0, s);
     }
     struct Inst { ushort col; ushort row; ushort glyph; ushort color; };
     struct VSOut { float4 pos [[position]]; float2 uv; float3 rgb [[flat]]; float alpha [[flat]]; };

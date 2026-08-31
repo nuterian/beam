@@ -142,10 +142,19 @@ final class GridView: NSView {
     /// drawn; this is a change detector, and it is what makes an animated caret
     /// affordable: the curve is flat for most of its period, so most ticks
     /// present nothing at all. Measured frames drop from 60/s to about 7.
+    /// The shader's curve, re-derived on the CPU purely as a *change detector*.
+    ///
+    /// Every constant comes from `Renderer`, and that is not tidiness. This
+    /// function, `secondsUntilCurveMoves` and the shader are three
+    /// implementations of one curve, and when the shader's gain and the CPU's
+    /// disagreed the caret was drawn in coarse steps — a defect visible only as
+    /// "the blink looks cheap". Sharing the constants is what stops the three
+    /// from drifting again.
     static func caretAlpha(_ t: Float) -> Float {
         guard t >= 0 else { return 1 }
         let c = cos(t * 2 * .pi / Renderer.caretPeriod)
-        return min(1, max(0.12, 0.12 + 0.88 * min(1, max(0, c * 3 + 0.5))))
+        let s = min(1, max(0, c * Renderer.caretGain * 0.5 + 0.5))
+        return Renderer.caretFloor + (1 - Renderer.caretFloor) * s
     }
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
 
@@ -689,7 +698,10 @@ final class GridView: NSView {
     static func secondsUntilCurveMoves(_ t: Float) -> Double {
         let p = Double(Renderer.caretPeriod)
         let half = p / 2
-        let edge = acos(1.0 / 6.0) / (2 * .pi) * p        // ~0.268 s
+        // The curve clamps at |cos| >= 1/gain, so that is where a ramp starts
+        // and ends. Derived, never a literal: `acos(1.0/6.0)` was correct only
+        // for the gain that happened to be in the shader at the time.
+        let edge = acos(1.0 / Double(Renderer.caretGain / 2)) / (2 * .pi) * p
         let phase = Double(t).truncatingRemainder(dividingBy: p)
         for k in 0...2 {
             let start = edge + Double(k) * half
