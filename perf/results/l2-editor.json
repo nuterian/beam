@@ -1,12 +1,12 @@
 {
-  "L2_local_render.keystroke_to_commit_1mb_doc_p99_ms": 0.5011,
-  "L2_local_render.keystroke_to_commit_zoomed_p99_ms": 0.7571,
-  "L2_local_render.open_1mb_file_to_first_paint_ms": 30.0323,
-  "L2_local_render.overlay_keystroke_to_commit_p99_ms": 12.7145,
+  "L2_local_render.keystroke_to_commit_1mb_doc_p99_ms": 0.8041,
+  "L2_local_render.keystroke_to_commit_zoomed_p99_ms": 1.4229,
+  "L2_local_render.open_1mb_file_to_first_paint_ms": 12.7655,
+  "L2_local_render.overlay_keystroke_to_commit_p99_ms": 12.7826,
   "L2_local_render.scroll_dropped_frames_pct": 0,
-  "L2_local_render.scroll_wheel_to_presented_60hz_p99_ms": 49.1214,
-  "L2_local_render.selection_drag_to_presented_60hz_p99_ms": 45.6147,
-  "L2_local_render.tab_switch_to_presented_60hz_p99_ms": 41.6222,
-  "L2_local_render.zoom_step_to_presented_60hz_p99_ms": 33.3944,
-  "L7_steady_state.rss_with_1mb_file_mb": 81.2344
+  "L2_local_render.scroll_wheel_to_presented_60hz_p99_ms": 48.8188,
+  "L2_local_render.selection_drag_to_presented_60hz_p99_ms": 41.6285,
+  "L2_local_render.tab_switch_to_presented_60hz_p99_ms": 41.6076,
+  "L2_local_render.zoom_step_to_presented_60hz_p99_ms": 34.7582,
+  "L7_steady_state.rss_with_1mb_file_mb": 79.6875
 }
