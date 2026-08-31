@@ -1267,6 +1267,49 @@ model while the renderer drew at 24 pt, so the scroll arithmetic belonged to an
 short of its own viewport. That is the same drift the owned point size exists to
 prevent, one level up in the tools rather than in the product.
 
+### What the gate found when the editor bench finally published
+
+The bench had never completed a run in the history of this branch, so
+`perf-gate` had never seen four of its rows. Fixing it did not create four
+failures; it revealed them. **They are not regressions from this section's
+work** — the numbers are the same on the pre-§5.7 commit, measured in this
+session's first gate run before anything visual had changed:
+
+```
+row                              pre-§5.7   §5.7    budget / gate
+scroll_wheel_to_presented          49.13   49.12      34 / 38
+overlay_keystroke_to_commit        12.68   12.71       4 /  8
+tab_switch_to_presented            42.38   41.62      34 / 38
+selection_drag_to_presented        41.55   45.62      34 / 38
+```
+
+The three presented rows share a cause, and it is methodological rather than a
+slow path. **They drive input faster than the display refreshes** — the scroll
+pass at 8 ms (125 Hz), the drag at 16 ms, the tab pass at 23 ms — and the render
+loop coalesces within a frame and then charges that frame its *oldest* pending
+input, which is the worst-case-honest accounting §5-L2 chose deliberately. Input
+arriving faster than 60 Hz therefore adds close to a frame, systematically. That
+is exactly what `burst_125hz_presented_p99_60hz_ms` exists to measure, and why
+it carries 44/60 rather than 34/38.
+
+The rows were given the keystroke budget on the reasoning that scrolling "is the
+same present path", which is true, and which quietly assumed scroll and drag
+arrive at keystroke rates. A trackpad delivers 120 Hz. The two §5.7 rows paced
+at 23 ms — `zoom_step_to_presented` at **33.4** and `keystroke_to_commit_zoomed`
+at **0.76** — pass, which is consistent with the same explanation.
+
+**No budget was moved.** §5.3's rule is that a metric is re-specified *before*
+any number moves and never loosened, and these numbers are now on the table, so
+the decision belongs to a session that has not seen them. The two honest options
+are to pace the passes at a rate a human actually generates, or to re-specify
+the rows the way §5.3 re-specified `launch_to_typeable_ms` — argued on the
+merits, not against a measurement.
+
+`overlay_keystroke_to_commit` is a different animal and is **not** about the
+candidate set: it measured 12.68 against 94 candidates and 12.71 against 2,001,
+so the filter is not what costs. The pass closes and reopens the overlay every
+eighth keystroke, and that is the part to look at first.
+
 ### Whitespace: the top of the window belongs to the tab strip
 
 §5.4 fixed a real defect — the grid's truncation remainder landed entirely on
