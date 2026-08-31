@@ -49,9 +49,10 @@ jobs:
         # (PLAN.md §3.3, tier 1). These two can, and neither is allowed to
         # publish a broken build.
         run: |
-          .build/bin/beam --bench-text --out perf/results/l2-text.json
-          .build/bin/beam --verify-session --out perf/results/l6-session.json
-          .build/bin/perf-gate
+          mkdir -p /tmp/ci
+          .build/bin/beam --bench-text --out /tmp/ci/l2-text.json
+          .build/bin/beam --verify-session --out /tmp/ci/l6-session.json
+          .build/bin/perf-gate --results /tmp/ci --deterministic-only
 
       - name: Publish the rolling `latest` release
         env:

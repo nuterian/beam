@@ -22,24 +22,27 @@ jobs:
           BIN=.build/release
           size_kb=$(( $(stat -f%z "$BIN/beam") / 1024 ))
           dylibs=$(otool -L "$BIN/beam" | tail -n +2 | wc -l | tr -d ' ')
-          mkdir -p perf/results
-          printf '{\n  "L1_lifecycle.binary_size_kb": %s,\n  "L1_lifecycle.linked_dylibs": %s\n}\n' "$size_kb" "$dylibs" > perf/results/l1-ci-counters.json
-          cat perf/results/l1-ci-counters.json
+          mkdir -p /tmp/ci
+          printf '{\n  "L1_lifecycle.binary_size_kb": %s,\n  "L1_lifecycle.linked_dylibs": %s\n}\n' "$size_kb" "$dylibs" > /tmp/ci/l1-ci-counters.json
+          cat /tmp/ci/l1-ci-counters.json
       - name: Text model + undo + lexer (headless)
         # The gap buffer's raw-coordinate line index, UTF-8 scalar handling,
         # undo/redo and the incremental lexer, plus their micro-budgets. No
         # window and no display, so it really runs here (PLAN.md §5.3).
-        run: .build/release/beam --bench-text --out perf/results/l2-text.json
+        run: |
+          mkdir -p /tmp/ci
+          .build/release/beam --bench-text --out /tmp/ci/l2-text.json
       - name: Pairing + encrypted transport (headless)
         # Screen-independent, so unlike every timing bench this one really runs
         # here: SAS agreement, machine-in-the-middle divergence, op round trip,
         # and the deterministic bytes/keystroke wire counter.
-        run: .build/release/beam --verify-session --out perf/results/l6-session.json
+        run: .build/release/beam --verify-session --out /tmp/ci/l6-session.json
       - name: Package + verify launch
         env:
           BEAM_ALLOW_HEADLESS: "1"
         run: |
+          mkdir -p /tmp/ci
           scripts/package_app.sh
           scripts/verify_app.sh
       - name: Perf gate
-        run: .build/release/perf-gate
+        run: .build/release/perf-gate --results /tmp/ci --deterministic-only

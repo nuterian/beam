@@ -7,8 +7,11 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 APP_BIN=dist/Beam.app/Contents/MacOS/Beam
-RESULT=perf/results/l7-packaged.json
-mkdir -p perf/results
+# CI points this at a scratch directory: a shared runner's numbers must never
+# overwrite the committed record of a real gate run (PLAN.md §3.1, §3.3).
+RESULTS_DIR=${BEAM_RESULTS_DIR:-perf/results}
+RESULT="$RESULTS_DIR/l7-packaged.json"
+mkdir -p "$RESULTS_DIR"
 
 if [ ! -x "$APP_BIN" ]; then
   echo "verify_app: $APP_BIN missing — run scripts/package_app.sh first" >&2

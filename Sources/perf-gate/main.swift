@@ -9,9 +9,21 @@ import BeamCore
 // Exit 0 = every present metric is within its gate. Exit 1 = at least one
 // breached. Missing metrics are reported but do not fail (a phase's
 // benchmarks may not exist yet) unless --require-all is passed.
+//
+// `--deterministic-only` judges ONLY the rows marked `deterministic` in
+// budgets.json — bytes on the wire, draw calls, binary size, linked dylibs,
+// packaged-launch — and reports the timing rows without letting them fail the
+// run. It exists for PLAN.md §3.3's tier 1: a shared CI runner is a noisy
+// virtual machine, and §3.1 says in as many words that absolute timing gates
+// belong on dedicated hardware. Measured on a GitHub macOS runner the same
+// commit that lexes a line in 0.6 µs here reports 0.9, and an atlas miss goes
+// from 63 µs p99 to 2,687 — so gating timings there does not catch
+// regressions, it just teaches everyone to ignore a red build, which is the
+// most expensive thing a gate can do.
 
 let args = CommandLine.arguments
 let requireAll = args.contains("--require-all")
+let deterministicOnly = args.contains("--deterministic-only")
 func argValue(_ flag: String) -> String? {
     guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
     return args[i + 1]
@@ -42,7 +54,7 @@ if let files = try? FileManager.default.contentsOfDirectory(atPath: resultsDir) 
     }
 }
 
-enum Status { case pass, fail, missing }
+enum Status { case pass, fail, missing, noisy }
 struct Outcome {
     let key: String
     let status: Status
@@ -62,6 +74,10 @@ for key in budgets.keys.sorted() {
         continue
     }
     let within = spec.higherIsBetter ? value >= gate : value <= gate
+    if !within && deterministicOnly && !spec.deterministic {
+        outcomes.append(Outcome(key: key, status: .noisy, value: value, spec: spec))
+        continue
+    }
     outcomes.append(Outcome(key: key, status: within ? .pass : .fail, value: value, spec: spec))
 }
 
@@ -74,8 +90,10 @@ func fmt(_ v: Double?) -> String {
 let passed = outcomes.filter { $0.status == .pass }
 let failed = outcomes.filter { $0.status == .fail }
 let missing = outcomes.filter { $0.status == .missing }
+let noisy = outcomes.filter { $0.status == .noisy }
 
-print("Beam perf gate — \(passed.count) pass, \(failed.count) fail, \(missing.count) missing\n")
+print("Beam perf gate — \(passed.count) pass, \(failed.count) fail, \(missing.count) missing"
+      + (deterministicOnly ? ", \(noisy.count) over gate but NOT JUDGED (timing on a shared runner)" : "") + "\n")
 for o in outcomes {
     switch o.status {
     case .missing:
@@ -84,6 +102,11 @@ for o in outcomes {
         print("  ✓ \(o.key) = \(fmt(o.value)) (budget \(fmt(o.spec.budget)), gate \(fmt(o.spec.gate)))")
     case .fail:
         print("  ✗ \(o.key) = \(fmt(o.value)) (budget \(fmt(o.spec.budget)), gate \(fmt(o.spec.gate)))")
+    case .noisy:
+        // Reported, never fatal. Silence would be worse than noise: a real
+        // regression should still be visible in the log even where it cannot
+        // be trusted enough to fail a build.
+        print("  ~ \(o.key) = \(fmt(o.value)) over gate \(fmt(o.spec.gate)) — timing on a shared runner, not judged")
     }
 }
 
