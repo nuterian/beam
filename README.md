@@ -40,9 +40,25 @@ others, or carry two different shortcuts.
 
 Download **[Beam.dmg](https://github.com/nuterian/beam/releases/latest/download/Beam.dmg)** —
 rebuilt and republished from `main` on every push — drag Beam onto Applications,
-and eject. The build is **ad-hoc signed and not notarized**, so the first launch
-must be **right-click → Open** rather than a double-click. Or build it yourself:
-`scripts/build.sh && scripts/package_app.sh`.
+and eject.
+
+The build is **ad-hoc signed and not notarized**: there is no Apple Developer
+certificate behind this project, so macOS refuses to open it. On **macOS 15** the
+old Control-click → Open shortcut no longer works — open it once, let it be
+blocked, then **System Settings → Privacy & Security → Open Anyway**. Or remove
+the download flag yourself with
+`xattr -dr com.apple.quarantine /Applications/Beam.app`.
+
+### Build it yourself
+
+Nothing to install beyond the Command Line Tools, and it avoids the signing
+question entirely:
+
+```bash
+git clone https://github.com/nuterian/beam && cd beam
+scripts/build.sh          # release build -> .build/bin
+scripts/package_app.sh    # -> dist/Beam.app and dist/Beam.dmg
+```
 
 ## What this is honestly not, yet
 

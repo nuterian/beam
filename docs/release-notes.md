@@ -1,8 +1,15 @@
 Built from `__SHA__` on __DATE__. Apple silicon, macOS 14+.
 
-**This build is ad-hoc signed and not notarized.** macOS will refuse the first
-double-click: right-click (or Control-click) Beam in Applications and choose
-**Open**, then confirm. You only have to do it once.
+**This build is ad-hoc signed and not notarized** — there is no Apple Developer
+certificate behind it — so macOS will refuse to open it.
+
+On **macOS 15** the old Control-click → Open shortcut no longer works. Open Beam once,
+let it be blocked, then go to **System Settings → Privacy & Security** and click
+**Open Anyway**. You only have to do it once.
+
+Or remove the download flag yourself:
+`xattr -dr com.apple.quarantine /Applications/Beam.app`. Building from source avoids the
+question entirely.
 
 Before trusting it with anything, read
 [what Beam is not, yet](https://jugalm.com/beam/#honest) — in particular,

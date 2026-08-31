@@ -187,6 +187,16 @@
     margin:var(--s-4) auto 0; line-height:1.6; text-wrap:pretty;
   }
   .first-run b{color:var(--dim); font-weight:600}
+  .first-run a{color:var(--dim); text-decoration:underline; text-underline-offset:3px}
+  .first-run a:hover{color:var(--fg)}
+  /* The command gets its own block, left-aligned and scrollable. Centred, it wrapped
+     across three lines and stopped being something anyone could read or select. */
+  .cmd{
+    margin:var(--s-3) auto 0; max-width:min(100%, 52ch); text-align:left;
+    border:1px solid var(--edge); border-radius:9px; padding:12px 14px;
+    overflow-x:auto; -webkit-overflow-scrolling:touch;
+  }
+  .cmd code{font-size:13.5px; color:var(--dim); white-space:pre}
 
   /* ---------- footer ---------- */
   footer{border-top:1px solid var(--edge); padding-block:var(--s-5) var(--s-6); font-size:14.5px}
@@ -306,7 +316,7 @@
       <li><b>No photon numbers are claimed.</b> Software measures “presented”, not photons, and the camera calibration does not exist yet. Every figure here is a software timestamp.</li>
       <li><b>Collaboration numbers are loopback.</b> Two processes on one machine — a software floor, never a LAN measurement.</li>
       <li><b>Keystroke to pixels is 26 ms on a 60 Hz panel</b>, and about 17 ms of that is present-path depth not yet cut. That work is open, and so is ProMotion.</li>
-      <li><b>The build is unsigned</b>, and it is Latin, LTR and monospace. No soft wrap, no regex search.</li>
+      <li><b>The build is unsigned</b>, so macOS blocks the first launch and you have to allow it by hand — there is no Developer&nbsp;ID behind this project. It is also Latin, LTR and monospace, with no soft wrap and no regex search.</li>
     </ul>
   </div>
 </section>
@@ -320,8 +330,19 @@
       <a class="btn ghost" href="https://github.com/nuterian/beam/blob/main/PLAN.md">Read the plan</a>
     </div>
     <p class="first-run">
-      Drag Beam onto Applications. The build is unsigned, so the first launch has to be
-      <b>right-click → Open</b> rather than a double-click. Once only.
+      Drag Beam onto Applications. There is no Apple Developer certificate behind this
+      build, so macOS refuses to open it. On macOS&nbsp;15 the old Control-click shortcut
+      no longer works: open Beam once, let it be blocked, then
+      <b>System&nbsp;Settings → Privacy&nbsp;&amp; Security → Open&nbsp;Anyway</b>.
+    </p>
+    <div class="cmd">
+      <code>xattr -dr com.apple.quarantine /Applications/Beam.app</code>
+    </div>
+    <p class="first-run">
+      That does the same thing in one line — it removes the flag macOS attaches to
+      anything downloaded from a browser. It is worth knowing that is what you are doing.
+      <a href="https://github.com/nuterian/beam#build-it-yourself">Building from source</a>
+      avoids the question entirely.
     </p>
   </div>
 </section>
