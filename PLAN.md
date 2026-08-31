@@ -1129,6 +1129,249 @@ a design loop nobody takes enough turns of.
 at rest; a `SceneStates.State` may therefore pin the phases it is about. That is
 why `hover-tab` and `hover-rail` are surfaces the tools can draw at all.
 
+## 5.7 Density, weight and information — design of record
+
+Beam was put beside VS Code and four things came back: **whitespace, zoom,
+heavier menu icons, a status bar that means something.** The complaint under all
+four is that Beam reads as a very clean *prototype* next to something that reads
+as a *tool*.
+
+This section amends §5.2's composition and §5.4's shell. It does **not** amend
+§5.3's chrome/capability rule: nothing here adds a panel, a sidebar or a
+toolbar, and the lineup test in §5.3 still passes. The gap being closed is
+**density, weight and information** — three things a product acquires when it
+stops being afraid of its own pixels — not chrome.
+
+### The cell is 1:2 by *derivation* now, not by luck
+
+Zoom could not ship until this was decided, because it is not a detail.
+
+`lineHeightEm = 1.30` was chosen in §5.2 as a designed number, and at the
+shipping em (28 px at 2×) it happens to produce a cell of **18×36** — exactly
+1:2. Every shape glyph in Beam is built on that accident:
+
+- **the rail icons**, which are square paths drawn across *two adjacent cells*
+  precisely because a cell is half a square (§5.4);
+- **the join code's block "pixels"**, which are square by construction as `2s`
+  cells by `s` rows (§5.2) — the screen the entire security model rests on;
+- and, less visibly, the chip, the caret and the accent bar, all sized from
+  `scale` and a cell edge.
+
+Measured across the range a zoom control would reach (SF Mono, 2×, the shipping
+`max(...)` ink guard applied):
+
+```
+ pt   em   cellW   cellH @1.30em   2·cellW   1:2 ?
+  9   18     12         23           24      BREAKS
+ 10   20     13         26           26      holds
+ 11   22     14         29           28      BREAKS
+ 12   24     15         31           30      BREAKS
+ 13   26     17         34           34      holds
+ 14   28     18         36           36      holds      <- today
+ 15   30     19         39           38      BREAKS
+ 16   32     20         42           40      BREAKS
+ 17   34     22         44           44      holds
+ 18   36     23         47           46      BREAKS
+ 20   40     25         52           50      BREAKS
+ 22   44     28         57           56      BREAKS
+ 24   48     30         62           60      BREAKS
+```
+
+Four sizes out of thirteen hold. A zoom control built on `lineHeightEm` as an
+*input* would therefore break the rail, the join code and the caret at nine of
+every thirteen steps — silently, because nothing in the pipeline asserts it.
+
+**The decision: `cellHeightPx` is derived as `2 × cellWidthPx`, and
+`lineHeightEm` becomes a checked consequence rather than an input.**
+
+The alternative was to stop assuming 1:2 in the icon geometry — draw icons into
+`min(2·cellW, cellH)` centred in their two-cell box. It was rejected for a
+reason that is structural rather than aesthetic: **it only fixes the rail.** The
+join code's square pixel is the same assumption, on the one screen in the
+product that is making a security promise, and "the digits are slightly oblong
+at 15 pt" is not a trade this product gets to make. One derivation fixes every
+shape glyph at once; the alternative fixes one of them and leaves the rest to be
+rediscovered.
+
+Three things make the derivation cheap rather than a compromise:
+
+- **At 14 pt it is a no-op.** 1.30 em rounds to 36 and 2·cellW *is* 36, so the
+  shipping cell is byte-identical and this session's zoom work introduces no
+  visual change at the default size. The design of §5.2 is not being reopened;
+  it is being generalised through the size it was designed at.
+- **§5.2's ink rule survives unchanged.** The cell must still clear the font's
+  *real* ink extents, because SF Mono's `|` overshoots its own declared descent
+  — so the derived height keeps the same `max(...)` guard. Measured, that guard
+  **never binds** for SF Mono between 9 and 24 pt (worst case 24 pt: ink needs
+  50 px, the derivation gives 60), so 1:2 holds at every step rather than
+  holding "usually". The guard stays because it is a guard: it is what catches
+  the Menlo fallback, or a face with a deeper descender, and it must fail loudly
+  by making a cell taller rather than quietly by clipping a glyph.
+- **The line height it implies stays inside the designed band.** Across the
+  ladder it ranges 1.25–1.33 em, against §5.2's chosen 1.30, its rejected 1.36
+  and the terminal-tight 1.16–1.18 it was chosen over. The variation is smaller
+  than the decision §5.2 already made and lands on 1.286 at the shipping size.
+
+**The zoom ladder** is therefore free to be chosen for how it *feels* rather
+than for which sizes the grid tolerates: **10, 11, 12, 13, 14, 15, 16, 18, 20,
+22, 24**, default 14. Fine steps around the default, where people actually
+adjust, and coarser at the ends.
+
+### Zoom, and what it costs
+
+`⌘+` / `⌘−` / `⌘0`, over the ladder above. `pointSize: 14` was a literal in six
+places — `AppDelegate`, `Screenshot`, `SceneDump`, `SceneStates` (twice) and
+`TextBench` — which is survivable while a number is a constant and is exactly
+the shape of bug that appears the moment it stops being one. It is `Zoom` now,
+and the tools read it from there.
+
+**A zoom step is input, and is budgeted like input.** It enters the same hybrid
+render loop as a keystroke, through the same `perform`, and
+`zoom_step_to_presented_60hz_p99_ms` is set at **34 ms / gate 38** — the
+keystroke budget and the tab-switch budget, for §5.4's reason: *a command is
+input*, and a zoom slower than typing is a zoom people stop using. It is the
+most expensive command Beam has, and the budget says that being expensive is not
+the same as being allowed to be slow. The number was written before the first
+measurement, per §3, and `BEAM_SABOTAGE_ZOOM_DELAY_MS` proves it can go red.
+
+Four things happen together and none are optional:
+
+1. **The atlas is rebuilt** — 95 ASCII glyphs and every shape glyph, at the new
+   cell. The pipeline state, the shader and the instance ring are deliberately
+   *not* rebuilt: recompiling a shader inside a keystroke budget would be absurd.
+2. **The glyph cache is evicted, and that is the correctness half.** `GlyphCache`
+   maps a scalar to an atlas *slot* and remembers which scalar is in each one.
+   Those slots index a texture that no longer exists, and the new texture has
+   nothing in them — so a cache carried across a rebuild hands out slots that
+   draw blanks, silently, for every non-ASCII character on screen. The ASCII
+   fast path never consults the cache, which is precisely why it would have
+   hidden this rather than exposed it.
+3. **The scroll is rescaled in lines, not pixels.** `scrollPx` is device pixels
+   against the *old* cell; carried over it would move the document by the ratio
+   of the two cell heights.
+4. **The tracking areas are rebuilt**, because the tab strip and the rail are in
+   different pixels now.
+
+And a second row, because the risk a zoom feature actually carries is not that
+the step is slow but that it leaves something behind: **`keystroke_to_commit_zoomed_p99_ms`,
+at the same budget as the unzoomed row.** Point size must not be visible in
+typing latency. The commit path builds the same instances at any size, so a
+regression there means a stale cache is being consulted per character, or a
+metric is being recomputed where it should be read.
+
+**`--screenshot --point-size <pt>`** renders any surface at any step, so the
+ladder is reviewed by eye rather than trusted. It earned itself immediately: the
+first run showed the seeded states publishing *default* cell metrics into the
+model while the renderer drew at 24 pt, so the scroll arithmetic belonged to an
+18×36 cell and the glyphs to a 30×60 one, and the document stopped eight lines
+short of its own viewport. That is the same drift the owned point size exists to
+prevent, one level up in the tools rather than in the product.
+
+### Whitespace: the top of the window belongs to the tab strip
+
+§5.4 fixed a real defect — the grid's truncation remainder landed entirely on
+the right and bottom edges, so the whole composition read as floating up and to
+the left — and the fix was to **centre** the grid, splitting the remainder
+evenly. Vertically that has since become the wrong answer, and §5.7 amends it.
+
+Centring is right when both vertical edges are ground. They are not: §5.4 put
+the **tab strip** on row 0 and the **status band** on the last row, so both ends
+are full-bleed chrome. Splitting then buys nothing at the bottom — the status
+band already overdraws past the row it claims and the GPU clips it — while at
+the top it deposits 28 device pixels of ground *above* the tab strip that
+nothing chose. §5.4 was already working around that strip rather than owning it:
+the tab recess is laid under the tabs instead of across the row precisely so a
+full-width band would not leave a lighter line along the top edge.
+
+So the top inset is **derived from the only thing that constrains it**: row 0
+has to contain the traffic lights, which occupy y 25…50 device px on a
+`fullSizeContentView` window. That is `max(0, lightsBottom − cellHeight)` — 14 px
+at the shipping size against 28 before, **0 from 20 pt up**, where the cell is
+finally taller than the lights and the strip goes flush to the top on its own,
+and larger when zoomed out so the lights can never overlap the first line of
+code. The rest of the remainder goes to the bottom; the status band's overhang
+goes from one row to two, because the slack there is now `h mod cellH` plus a
+whole cell, which is strictly less than two.
+
+**And the air goes where it was missing: under the tabs, for no editing row.**
+The document began in the row immediately below the strip with nothing between
+them. The row that would fix it is the scarcest thing in the layout — but the
+**document plane already carries a whole-pixel origin offset**, which is the
+machinery pixel-quantized scrolling is built on (§5.3), so the document is inset
+from its own viewport by a third of a cell instead. The bottom-most row gives up
+the same third, which is the same partial row any pixel-quantized scroll already
+shows. `GridView.offset(atCol:row:)` applies the identical offset, because a gap
+applied on one side of that pair and not the other is an editor whose clicks
+land on the wrong line.
+
+### The rail: filled silhouettes, and the only larger size there is
+
+The icons were outlines at a 3 device-pixel stroke in a 36 px box, and at that
+size a 3 px outline reads as dithering rather than as a mark — the one element
+in the window whose entire job is to be a target was the faintest thing in it.
+Weight was the larger half of the problem and **filled silhouettes** are the
+fix; interior detail is **knocked out** of the fill rather than stroked, which
+works because the atlas is one alpha channel and clearing to zero shows the
+ground behind.
+
+Size is the other half, and here the 1:2 ratio decides rather than taste. A
+square icon spans `2k` cells across by `k` rows down, so the available sizes are
+36 px and 72 px and **nothing in between**. §5.4 took `k = 1`; §5.7 takes
+`k = 2` — a ~26 pt mark against VS Code's ~24, in a rail widened from four cells
+to six (108 px / 54 pt against VS Code's 48). The row pitch follows to three
+rows, so the icon sits in 72-in-108 vertically exactly as it does horizontally:
+a column of square targets on a square pitch, which is what an activity bar is.
+`--dump-scene` prints the whole block as one letter, computed from the block's
+extent rather than listed — the list was written when an icon was two cells and
+silently stopped covering it.
+
+The peer-colour treatment is untouched: the peers icon takes a *peer's* colour
+when someone is nearby, so the rail carries presence in the same language as the
+status line (§5.2's identity set).
+
+### A status bar that means something
+
+The line carried two facts. The lexer had already resolved the **language**, the
+open path knew the **encoding**, and `Document` knew its own **indentation** and
+**line endings**. None of it was hidden on purpose; it was hidden because
+nothing had ever asked for it.
+
+- **Two are controls and two are readouts, and the difference is visible.**
+  Language and indent open a picker on the same overlay mechanism ⌘O and ⌘K
+  already use — which is the whole reason a status segment could become a
+  control without adding any chrome — and are set in `dim`. The encoding and the
+  line ending cannot currently be changed, so they stay `faint` and do not light
+  up under the pointer. Colouring a readout as if it were a control is how a
+  status bar teaches people to stop clicking it.
+- **One gap, everywhere.** Three cells between every segment, against the old
+  1/2/3 with no system behind it — which §5.2 already names as the difference
+  between an instrument and debug output.
+- **The left run yields; the right run never does.** When the two collide the
+  left one drops segments from the right, so the order is a priority order — and
+  it is deliberately not VS Code's, which puts the language at the far right
+  where a right-truncating run would lose the most informative fact first. The
+  encoding goes first here: it is the one segment that can only ever say one
+  thing.
+- **Indentation is detected, not assumed**, from a bounded sample off the top of
+  the buffer — it runs on the budgeted open path, and indentation is consistent
+  within a file or it is not a property of it at all. **Tab now inserts what the
+  file already indents with.** It always inserted a literal tab, which in a
+  space-indented file put an invisible mixed indent into somebody else's source
+  on the first keystroke; a readout the editor's own behaviour contradicts is
+  worse than no readout.
+
+**The latency readout keeps its place and its prominence, and loses its field
+labels.** It read `p50 25.8  p99 33.7 ms` — twenty-one cells, five of them spent
+naming two percentiles in the vocabulary of a benchmark harness. It is now a
+filled **bolt** glyph, the median, a thin separator, the tail, and the unit:
+sixteen cells, the same ink, and the mark carries the budget colour with the
+values so the whole readout goes red as one object rather than as two numbers
+beside a label. An instrument names its quantity with a mark and a scale; only
+debug output names it with a field label. Nothing about what is *measured*
+changed — `budgets.json` still gates on p50 and p99 by name and §3.1 still
+forbids a mean anywhere near either — and the five cells it gave back are
+exactly what let all six left-hand segments fit at the default window size.
+
 ## 6. Phases (each ships its benchmarks first; no merge red)
 
 **Phase 0 — Skeleton + harness.** Nothing else starts until green.

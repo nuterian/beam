@@ -14,12 +14,13 @@ import AppKit
 /// the window is still instances from the glyph atlas.
 struct Command {
     enum Group: Int, CaseIterable {
-        case file, edit, go, session
+        case file, edit, view, go, session
 
         var title: String {
             switch self {
             case .file: return "File"
             case .edit: return "Edit"
+            case .view: return "View"
             case .go: return "Go"
             case .session: return "Session"
             }
@@ -88,6 +89,18 @@ enum Commands {
             view.requestRender()
         },
 
+        // Zoom. `view` rather than `go`, because these are the only commands in
+        // Beam that change how the window is drawn rather than what is in it.
+        Command(id: "view.zoomIn", title: "Zoom In", group: .view, key: "=", modifiers: [.command]) {
+            $0.zoom(by: 1, t0: nil)
+        },
+        Command(id: "view.zoomOut", title: "Zoom Out", group: .view, key: "-", modifiers: [.command]) {
+            $0.zoom(by: -1, t0: nil)
+        },
+        Command(id: "view.zoomReset", title: "Actual Size", group: .view, key: "0", modifiers: [.command]) {
+            $0.zoom(by: nil, t0: nil)
+        },
+
         Command(id: "go.palette", title: "Command Palette…", group: .go, key: "p",
                 modifiers: [.command, .shift]) {
             $0.app.openOverlay(.commands)
@@ -117,8 +130,14 @@ enum Commands {
     /// straight through the window — which benches depend on, since
     /// `window.sendEvent` never reaches the menu.
     static func matching(_ event: NSEvent) -> Command? {
-        guard let chars = event.charactersIgnoringModifiers?.lowercased(), !chars.isEmpty else { return nil }
-        let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        guard var chars = event.charactersIgnoringModifiers?.lowercased(), !chars.isEmpty else { return nil }
+        var mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        // **⌘+ is ⇧⌘= on a US layout.** The key people press to zoom in is the
+        // one with the plus printed on it, and an app that bound only ⌘= would
+        // answer half of them. The command stays declared as ⌘=, which is what
+        // the menu shows and what the palette prints, and this is the one place
+        // that knows the two are the same gesture.
+        if chars == "+" { chars = "="; mods.remove(.shift) }
         return all.first { $0.key == chars && $0.modifiers == mods }
     }
 

@@ -23,7 +23,10 @@ enum Screenshot {
     /// reproducible on any machine and comparable across sessions.
     static let scale: CGFloat = 2
 
-    static func run(surface: String, outDir: String) -> Never {
+    static func run(surface: String, outDir: String, pointSizeOverride: CGFloat?) -> Never {
+        // Before the states are built: they publish their cell metrics into the
+        // model, and those have to be the metrics this renderer will draw with.
+        SceneStates.pointSize = pointSizeOverride ?? Zoom.defaultPointSize
         let states = SceneStates.all()
         let wanted = surface == "all" ? states : states.filter { $0.key == surface }
         guard !wanted.isEmpty || surface == atlasKey else {
@@ -35,7 +38,7 @@ enum Screenshot {
 
         let renderer: Renderer
         do {
-            renderer = try Renderer(pointSize: 14, scale: scale)
+            renderer = try Renderer(pointSize: pointSizeOverride ?? Zoom.defaultPointSize, scale: scale)
         } catch {
             FileHandle.standardError.write("screenshot: \(error)\n".data(using: .utf8)!)
             exit(1)

@@ -32,7 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let renderer: Renderer
         do {
-            renderer = try Renderer(pointSize: 14, scale: NSScreen.main?.backingScaleFactor ?? 2)
+            renderer = try Renderer(pointSize: Zoom.defaultPointSize,
+                                 scale: NSScreen.main?.backingScaleFactor ?? 2)
         } catch {
             FileHandle.standardError.write("BEAM_LAUNCH_FAILED: \(error)\n".data(using: .utf8)!)
             exit(1)

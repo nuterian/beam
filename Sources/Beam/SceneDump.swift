@@ -26,7 +26,7 @@ enum SceneDump {
         defer { buf.deallocate() }
         var w = InstanceWriter(buf, cap: cap)
         // A time far past every fade, so the dump shows the settled frame.
-        let m = GlyphAtlas.Metrics(pointSize: 14, scale: 2)
+        let m = GlyphAtlas.Metrics(pointSize: Zoom.defaultPointSize, scale: 2)
         _ = state.build(&w, monotonicNow() + 10, cols, rows,
                         cols * m.cellWidthPx, rows * m.cellHeightPx)
 
@@ -95,6 +95,7 @@ enum SceneDump {
         case GlyphAtlas.dividerHIndex: return "\u{2500}"
         case GlyphAtlas.dividerVIndex: return "\u{2502}"
         case GlyphAtlas.tabAccentIndex: return "\u{2580}"
+        case GlyphAtlas.boltGlyphIndex: return "\u{2301}"
         default:
             if glyph < 95 { return Character(UnicodeScalar(UInt8(glyph) + 32)) }
             // **A rail icon prints as one letter over its whole block.** It

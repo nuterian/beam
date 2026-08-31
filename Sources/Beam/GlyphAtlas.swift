@@ -84,6 +84,17 @@ final class GlyphAtlas {
     /// is just text on the ground with no container, which is exactly what
     /// "the tabs look weird" was.
     static let tabAccentIndex: UInt16 = 108
+    /// **The latency mark** (PLAN.md §5.7). A filled bolt, set on the x-height
+    /// beside the numbers it belongs to.
+    ///
+    /// The readout used to be `p50 25.8  p99 33.7 ms` — twenty-one cells, five
+    /// of them spent on two labels written in the vocabulary of a benchmark
+    /// harness. The numbers are the product and they stay exactly as bright;
+    /// what changed is that an instrument names its quantity with a mark and a
+    /// scale, and only debug output names it with a field label. Same ink, five
+    /// fewer cells, and the mark carries the budget colour with the values so
+    /// the whole readout goes red as one thing.
+    static let boltGlyphIndex: UInt16 = 109
     /// First slot `GlyphCache` may assign. Everything below is static and is
     /// never evicted, so the chrome can never lose its own glyphs to a file
     /// full of mathematical symbols.
@@ -400,6 +411,30 @@ final class GlyphAtlas {
         ctx.setStrokeColor(CGColor(gray: 1, alpha: 1))
         ctx.stroke(CGRect(x: o.x + inset, y: (o.y + CGFloat(cellHeightPx - baselinePx)).rounded() + inset,
                           width: w - 2 * inset, height: CGFloat(baselinePx) - 2 * inset).insetBy(dx: stroke / 2, dy: stroke / 2))
+
+        // 109 — the latency bolt. Optically centred on the x-height, like the
+        // identity chip, so it sits on the same line as the numbers beside it
+        // rather than floating in its cell. Drawn as one filled polygon: at
+        // this size a stroked bolt is the same dithering the rail icons were.
+        o = cellOrigin(Int(Self.boltGlyphIndex))
+        let boltH = (CGFloat(baselinePx) * 0.62).rounded()
+        let boltW = (boltH * 0.52).rounded()
+        let boltX = (o.x + (w - boltW) / 2).rounded()
+        let boltY = (o.y + CGFloat(cellHeightPx - baselinePx) + (CGFloat(baselinePx) * 0.18)).rounded()
+        // Normalised, y up from the bolt's foot. A bolt is a zigzag with an
+        // overhang on each side; without the overhang it reads as a lightning
+        // *stripe*, which is a slash.
+        let bolt: [(CGFloat, CGFloat)] = [
+            (0.62, 1.00), (0.00, 0.46), (0.40, 0.46),
+            (0.34, 0.00), (1.00, 0.56), (0.58, 0.56),
+        ]
+        ctx.beginPath()
+        for (i, p) in bolt.enumerated() {
+            let pt = CGPoint(x: boltX + p.0 * boltW, y: boltY + p.1 * boltH)
+            if i == 0 { ctx.move(to: pt) } else { ctx.addLine(to: pt) }
+        }
+        ctx.closePath()
+        ctx.fillPath()
 
         // --- Rail icons (PLAN.md §5.7).
         //

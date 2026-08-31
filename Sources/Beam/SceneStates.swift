@@ -26,11 +26,23 @@ enum SceneStates {
         var phases: [Renderer.Ink: Float] = [:]
     }
 
+    /// The point size the seeded states lay themselves out at.
+    ///
+    /// **It is a var because `--screenshot --point-size` exists**, and the
+    /// first thing that flag did was catch this: the states published
+    /// `Zoom.defaultPointSize` cell metrics into the model while the renderer
+    /// drew at 24 pt, so the scroll arithmetic and the viewport row count
+    /// belonged to an 18x36 cell and the glyphs to a 30x60 one. The document
+    /// stopped eight lines short of its own viewport. Exactly the drift the
+    /// point size being owned in one place is meant to prevent, one level up in
+    /// the tools rather than in the product.
+    static var pointSize = Zoom.defaultPointSize
+
     /// The grid the shipping window produces: AppDelegate's 980x640 content at
     /// 2x, through the same cell metrics and the same arithmetic GridView
     /// applies to `drawableSize`.
     static let referenceGrid: (cols: Int, rows: Int) = {
-        let m = GlyphAtlas.Metrics(pointSize: 14, scale: 2)
+        let m = GlyphAtlas.Metrics(pointSize: Zoom.defaultPointSize, scale: 2)
         return (m.cols(forWidthPx: 1960), m.rows(forHeightPx: 1280))
     }()
 
@@ -38,8 +50,9 @@ enum SceneStates {
     /// values coloured, units quiet.
     static func hudSample(peer: String? = nil, ink: Int = 0) -> [Scene.Span] {
         var spans: [Scene.Span] = [
-            Scene.Span("p50 ", .faint), Scene.Span("25.8", .green),
-            Scene.Span("  p99 ", .faint), Scene.Span("33.7", .green),
+            Scene.Span(glyph: GlyphAtlas.boltGlyphIndex, .green),
+            Scene.Span(" ", .faint), Scene.Span("25.8", .green),
+            Scene.Span(" · ", .faint), Scene.Span("33.7", .green),
             Scene.Span(" ms", .faint),
         ]
         if let peer {
@@ -141,7 +154,7 @@ enum SceneStates {
                    _ hud: [Scene.Span] = hudSample(),
                    phases: [Renderer.Ink: Float] = [:]) -> State {
             State(key: key, title: title, build: { w, now, cols, rows, widthPx, heightPx in
-                let m = GlyphAtlas.Metrics(pointSize: 14, scale: 2)
+                let m = GlyphAtlas.Metrics(pointSize: pointSize, scale: 2)
                 app.cellWidthPx = m.cellWidthPx
                 app.cellHeightPx = m.cellHeightPx
                 app.originXPx = m.originX(forWidthPx: widthPx)

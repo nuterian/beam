@@ -14,7 +14,9 @@ let config = AppConfig.parse(CommandLine.arguments)
 if case .verifySession(let out) = config.mode { SessionVerify.run(outPath: out) }
 if case .benchText(let out) = config.mode { TextBench.run(outPath: out) }
 if case .dumpScene = config.mode { SceneDump.run() }
-if case .screenshot(let surface, let out) = config.mode { Screenshot.run(surface: surface, outDir: out) }
+if case .screenshot(let surface, let out, let pt) = config.mode {
+    Screenshot.run(surface: surface, outDir: out, pointSizeOverride: pt)
+}
 
 let app = NSApplication.shared
 let delegate = AppDelegate(config: config)

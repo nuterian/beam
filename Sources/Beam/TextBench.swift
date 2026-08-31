@@ -234,12 +234,46 @@ enum TextBench {
             check(GridView.caretAlpha(-1) == 1, "a negative time means rest solid")
         }
 
+        // MARK: Correctness — the cell stays 1:2 at every zoom step
+
+        do {
+            // **The invariant every shape glyph in Beam is built on** (PLAN.md
+            // §5.7). The rail icons are square paths drawn across two cells
+            // because a cell is half a square; the join code's block pixels are
+            // square as `2s` cells by `s` rows, on the one screen where the
+            // security model is a human comparing digits. Under the old rule —
+            // a designed line height as the *input* — only four of thirteen
+            // sizes held it, so a zoom control would have broken the rail, the
+            // caret and the join code at nine steps in thirteen, silently,
+            // because nothing asserted it. This is that assertion.
+            //
+            // Headless by construction: `Metrics` is CoreText only, no Metal
+            // and no window, which is the same seam `--dump-scene` uses.
+            for pt in Zoom.steps {
+                let m = GlyphAtlas.Metrics(pointSize: pt, scale: 2)
+                check(m.cellHeightPx == 2 * m.cellWidthPx,
+                      "the cell is 1:2 at \(pt) pt (got \(m.cellWidthPx)x\(m.cellHeightPx))")
+                // §5.2's rule, which the derivation does not get to repeal: the
+                // cell must clear the font's real ink, and the baseline must
+                // leave room for the deepest descender.
+                check(m.baselinePx > 0 && m.baselinePx < m.cellHeightPx,
+                      "the baseline is inside the cell at \(pt) pt")
+                let lh = GlyphAtlas.lineHeightEm(m, pointSize: pt)
+                check(lh > 1.18 && lh < 1.36,
+                      "the implied line height at \(pt) pt stays inside the band §5.2 designed in (got \(lh))")
+            }
+            check(Zoom.steps[Zoom.defaultIndex] == 14, "the default step is the size §5.2 designed at")
+            let shipping = GlyphAtlas.Metrics(pointSize: Zoom.defaultPointSize, scale: 2)
+            check(shipping.cellWidthPx == 18 && shipping.cellHeightPx == 36 && shipping.baselinePx == 29,
+                  "and deriving the cell did not move the shipping one (got \(shipping.cellWidthPx)x\(shipping.cellHeightPx), baseline \(shipping.baselinePx))")
+        }
+
         if !failures.isEmpty {
             FileHandle.standardError.write(
                 ("text bench FAILED:\n  " + failures.joined(separator: "\n  ") + "\n").data(using: .utf8)!)
             exit(4)
         }
-        print("correctness: 9 groups pass (buffer fuzz, utf-8, undo/redo, coalescing, columns, lexer, shell states, remote edits, caret curve)")
+        print("correctness: 10 groups pass (buffer fuzz, utf-8, undo/redo, coalescing, columns, lexer, shell states, remote edits, caret curve, the 1:2 cell at every zoom step)")
 
         // MARK: - Micro-budgets
 
@@ -279,7 +313,7 @@ enum TextBench {
         // One atlas miss: CoreText rasterization of a scalar the atlas has not
         // seen, into one cell, cascade lookup included.
         var missUs: [Double] = []
-        if let renderer = try? Renderer(pointSize: 14, scale: 2) {
+        if let renderer = try? Renderer(pointSize: Zoom.defaultPointSize, scale: 2) {
             var scalars: [UnicodeScalar] = []
             for v in 0x00C0...0x024F { if let s = UnicodeScalar(UInt32(v)) { scalars.append(s) } }
             for v in 0x2190...0x22FF { if let s = UnicodeScalar(UInt32(v)) { scalars.append(s) } }

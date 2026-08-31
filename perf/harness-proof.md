@@ -178,3 +178,32 @@ gate judged the sabotaged metric and nothing else.
   mind: a stalled main thread causes presented-frame starvation (n=8 presented of
   100 sent) because keystrokes coalesce behind the blocked drawable — visible in
   the numbers, exactly as it should be.
+
+## §5.7 (2026-08-31) — the 1:2 cell, and the zoom rows
+
+**`--bench-text`: the cell is 1:2 at every zoom step.** Proved red by restoring
+the pre-§5.7 derivation (`height = round(em * 1.30)`) and re-running. Eight of
+the eleven ladder steps failed, exactly as the standalone measurement predicted:
+
+```
+text bench FAILED:
+  the cell is 1:2 at 11.0 pt (got 14x29)
+  the cell is 1:2 at 12.0 pt (got 15x31)
+  the cell is 1:2 at 15.0 pt (got 19x39)
+  the cell is 1:2 at 16.0 pt (got 20x42)
+  the cell is 1:2 at 18.0 pt (got 23x47)
+  the cell is 1:2 at 20.0 pt (got 25x52)
+  the cell is 1:2 at 22.0 pt (got 28x57)
+  the cell is 1:2 at 24.0 pt (got 30x62)
+```
+
+This is the check that would have caught a zoom control shipping with broken
+rail icons, a broken caret and non-square join-code digits at nine sizes in
+thirteen — silently, because until now nothing in the pipeline asserted the
+ratio every shape glyph is built on. It is headless (CoreText only, no Metal, no
+window), so unlike the photon rows it runs on any machine and in CI.
+
+**`BEAM_SABOTAGE_ZOOM_DELAY_MS`** stalls the atlas rebuild inside a zoom step —
+what a naive re-rasterization, or one that also recompiled the shader, would
+feel like. It backs `zoom_step_to_presented_60hz_p99_ms` (budget 34 / gate 38,
+the keystroke budget, written before the first measurement per §3).

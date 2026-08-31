@@ -360,6 +360,71 @@ final class GridView: NSView {
         if let t0 { noteInput(t0: t0, remote: false) } else { requestRender() }
     }
 
+    // MARK: - Zoom (PLAN.md §5.7)
+
+    /// Index into `Zoom.steps`. The window's point size, and the only place it
+    /// is remembered.
+    private(set) var zoomIndex = Zoom.defaultIndex
+
+    /// Moves the zoom by `delta` steps, or to the default when `delta` is nil.
+    ///
+    /// **A zoom is input.** It is reached only through the command table, so
+    /// `perform` above puts it into the hybrid render loop carrying the
+    /// originating event's timestamp, exactly as a keystroke or a tab switch
+    /// does, and it is accounted against `zoom_step_to_presented_60hz_p99_ms`
+    /// at the same budget (§5.4: a command is input). This function therefore
+    /// does not render or account anything itself — doing both would charge one
+    /// keypress twice and record the second, faster one.
+    ///
+    /// Four things have to happen together and none of them are optional:
+    ///
+    /// 1. **The atlas is rebuilt** and the glyph cache evicted with it — see
+    ///    `Renderer.setPointSize`, where the eviction is the correctness half.
+    /// 2. **The scroll is rescaled**, in *lines* rather than pixels, so the
+    ///    line you were reading is still the line at the top. `scrollPx` is
+    ///    device pixels against the old cell; carried over unchanged it would
+    ///    move the document by the ratio of the two cell heights, which at a
+    ///    two-step zoom out of a long file is most of a screen.
+    /// 3. **The caret is revealed**, because the viewport just changed how many
+    ///    rows it holds and the caret can have fallen off the bottom of it.
+    /// 4. **The tracking areas are rebuilt**, because the tab strip and the
+    ///    rail are in different pixels now and a hover region that is not is a
+    ///    pointer that lights up the wrong thing.
+    ///
+    /// The `t0` parameter is unused for the same reason as the note above, and
+    /// is kept in the signature so a future caller that is NOT a command has an
+    /// obvious place to hand one in.
+    func zoom(by delta: Int?, t0: Double?) {
+        let target = delta.map { Zoom.clamp(zoomIndex + $0) } ?? Zoom.defaultIndex
+        guard target != zoomIndex else { return }
+        let oldCellH = renderer.atlas.cellHeightPx
+        let oldCellW = renderer.atlas.cellWidthPx
+        do {
+            try renderer.setPointSize(Zoom.steps[target])
+        } catch {
+            // A failed rebuild leaves the old atlas in place and the old index
+            // standing, so the window keeps working at the size it had. Zoom is
+            // a convenience; losing it is not worth losing the editor.
+            FileHandle.standardError.write("zoom: \(error)\n".data(using: .utf8)!)
+            return
+        }
+        zoomIndex = target
+        let newCellH = renderer.atlas.cellHeightPx
+        let newCellW = renderer.atlas.cellWidthPx
+        // Every document, not only the front one: switching to a tab that had
+        // been scrolled at the old size would otherwise land somewhere else.
+        for d in app.documents {
+            d.scrollPx = (d.scrollPx / oldCellH) * newCellH
+            d.scrollXPx = (d.scrollXPx / oldCellW) * newCellW
+        }
+        app.cellWidthPx = newCellW
+        app.cellHeightPx = newCellH
+        updateDrawableSize()
+        revealCaret()
+        updateTrackingAreas()
+    }
+
+
     // MARK: - Clipboard
 
     /// The selection as text, or nil when there is none. Copy and cut both
@@ -1169,10 +1234,19 @@ final class GridView: NSView {
     private func hudSpans() -> [Scene.Span] {
         guard let stats = recorder.hudPresentedStats() else { return [] }
         let ink: Renderer.Ink = stats.p99 <= hudP99BudgetMs ? .green : .red
+        // **The mark, then the median, then the tail, then the unit** (§5.7).
+        // The bolt takes the budget colour with the values, so the readout goes
+        // red as one object rather than as two numbers beside a label. The
+        // percentiles are not named any more; they are ordered, median first
+        // and tail second, which is the order every instrument in this project
+        // reports them in. What is measured did not change — `budgets.json`
+        // still gates on p50 and p99 by name, and PLAN.md §3.1 still forbids a
+        // mean anywhere near either of them.
         var spans = [
-            Scene.Span("p50 ", .faint),
+            Scene.Span(glyph: GlyphAtlas.boltGlyphIndex, ink),
+            Scene.Span(" ", .faint),
             Scene.Span(String(format: "%.1f", stats.p50), ink),
-            Scene.Span("  p99 ", .faint),
+            Scene.Span(" · ", .faint),
             Scene.Span(String(format: "%.1f", stats.p99), ink),
             Scene.Span(" ms", .faint),
         ]

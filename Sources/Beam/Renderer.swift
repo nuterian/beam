@@ -213,7 +213,14 @@ final class Renderer {
     private static let ringDepth = 3
 
     let device: MTLDevice
-    let atlas: GlyphAtlas
+    /// **A `var`, because zoom rebuilds it** (PLAN.md §5.7). Every metric the
+    /// layout derives from — cell size, baseline, grid origin, the shape
+    /// glyphs' geometry — comes out of this object, so changing the point size
+    /// at runtime means replacing it wholesale rather than adjusting anything.
+    private(set) var atlas: GlyphAtlas
+    /// The backing scale the atlas was built at, kept so a rebuild happens at
+    /// the same scale rather than at whatever a caller remembers.
+    private let scale: CGFloat
     /// Shader runtime-compile cost, for the launch breakdown (ms).
     let shaderCompileMs: Double
     private let queue: MTLCommandQueue
@@ -421,6 +428,7 @@ final class Renderer {
         device = dev
         guard let q = dev.makeCommandQueue() else { throw BeamError("no command queue") }
         queue = q
+        self.scale = scale
         atlas = try GlyphAtlas(device: dev, pointSize: pointSize, scale: scale)
         // One atlas per process, so one cache. Beyond this line any scalar the
         // ASCII fast path does not cover can actually be drawn.
@@ -450,6 +458,28 @@ final class Renderer {
             ring.append(buf)
         }
         instanceRing = ring
+    }
+
+    /// Rebuilds the atlas at a new point size.
+    ///
+    /// **Evicting the glyph cache is not housekeeping here, it is the
+    /// correctness half of the operation.** `GlyphCache` maps a scalar to an
+    /// atlas slot and remembers, per slot, which scalar is in it. Those slots
+    /// are positions in a texture that no longer exists, and the new texture
+    /// has nothing in them — so a cache carried across a rebuild hands out
+    /// slots that draw blanks, silently, for every non-ASCII character on
+    /// screen. The ASCII fast path is unaffected either way: it indexes the
+    /// atlas directly and never comes through the cache, which is exactly why
+    /// it would have hidden this.
+    ///
+    /// The pipeline state, the shader and the instance ring are all
+    /// independent of the point size and are deliberately NOT rebuilt: a zoom
+    /// step is budgeted like a keystroke (`zoom_step_to_presented_60hz_p99_ms`)
+    /// and recompiling a shader inside that budget would be absurd.
+    func setPointSize(_ pointSize: CGFloat) throws {
+        if Sabotage.zoomDelayMs > 0 { usleep(UInt32(Sabotage.zoomDelayMs) * 1000) }
+        atlas = try GlyphAtlas(device: device, pointSize: pointSize, scale: scale)
+        GlyphCache.shared.reset(atlas: atlas)
     }
 
     /// Zero-copy frame prep: the caller writes instances straight into the

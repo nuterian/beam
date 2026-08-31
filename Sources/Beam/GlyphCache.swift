@@ -45,6 +45,25 @@ final class GlyphCache {
         slotForScalar.reserveCapacity(dynamicCount * 2)
     }
 
+    /// **Points the cache at a new atlas and forgets everything about the old
+    /// one** (PLAN.md §5.7). Called when zoom rebuilds the atlas.
+    ///
+    /// This is a correctness operation, not a cleanup. `slotForScalar` and
+    /// `scalarForSlot` describe a texture that has just been thrown away: every
+    /// slot they name is empty in the new one, so a cache carried across a
+    /// rebuild answers `glyph(for:)` with a slot that draws nothing — for every
+    /// non-ASCII character on screen, silently, with no error anywhere. The
+    /// ASCII fast path never consults this class, which is precisely why it
+    /// would have hidden the bug rather than exposed it.
+    func reset(atlas: GlyphAtlas) {
+        self.atlas = atlas
+        slotForScalar.removeAll(keepingCapacity: true)
+        for i in 0..<dynamicCount {
+            scalarForSlot[i] = 0
+            lastUsed[i] = 0
+        }
+    }
+
     /// Called once per frame, before any instance is written. Eviction is
     /// scoped by it: a slot touched during the frame being built is never
     /// reused inside that frame, so a glyph can never be replaced out from

@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 enum RunMode {
     case normal
@@ -13,7 +14,7 @@ enum RunMode {
     case benchEditor(out: String)
     case benchText(out: String)
     case dumpScene
-    case screenshot(surface: String, out: String)
+    case screenshot(surface: String, out: String, pointSize: CGFloat?)
 }
 
 enum JoinRole: String {
@@ -68,8 +69,15 @@ struct AppConfig {
         }
         if args.contains("--dump-scene") { return AppConfig(mode: .dumpScene, openPath: openPath) }
         if args.contains("--screenshot") {
+            // `--point-size` renders a surface at any zoom step, so the ladder
+            // in `Zoom` can be reviewed by eye rather than trusted (PLAN.md
+            // §5.7). It is what proves the derived 1:2 cell actually holds the
+            // rail icons and the join code's block digits square at every size,
+            // which is the claim the whole zoom feature rests on.
+            let pt = value(after: "--point-size").flatMap { Double($0) }.map { CGFloat($0) }
             return AppConfig(mode: .screenshot(surface: value(after: "--surface") ?? "all",
-                                               out: value(after: "--out") ?? "docs/shots"),
+                                               out: value(after: "--out") ?? "docs/shots",
+                                               pointSize: pt),
                              openPath: openPath)
         }
         if args.contains("--verify-session") {
@@ -95,6 +103,10 @@ enum Sabotage {
     /// Delays filtering in the open overlay. Proves
     /// `overlay_keystroke_to_commit_p99_ms` can go red.
     static let overlayDelayMs = Int(ProcessInfo.processInfo.environment["BEAM_SABOTAGE_OVERLAY_DELAY_MS"] ?? "") ?? 0
+    /// Stalls the atlas rebuild a zoom step performs — what a naive
+    /// re-rasterization, or one that also recompiled the shader, would feel
+    /// like. Proves `zoom_step_to_presented_60hz_p99_ms` can go red.
+    static let zoomDelayMs = Int(ProcessInfo.processInfo.environment["BEAM_SABOTAGE_ZOOM_DELAY_MS"] ?? "") ?? 0
     /// Makes rasterizing a glyph the atlas does not have expensive — what a
     /// naive atlas (or a font-fallback storm) would feel like on the keystroke
     /// path. Proves `L2.atlas_miss_rasterize_us` can go red.

@@ -262,7 +262,7 @@ final class EditorBench {
                 app.closeOverlay()
                 drain {
                     self.overlayCommitMs = self.view.recorder.commitSamples
-                    self.finish()
+                    self.beginZoom()
                 }
                 return
             }
@@ -273,6 +273,68 @@ final class EditorBench {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { step() }
         }
         step()
+    }
+
+    /// Zoom steps, and then typing at a zoomed size (PLAN.md §5.7).
+    ///
+    /// Two claims are under test and they are different claims. **A zoom step
+    /// is input** — it re-rasterizes the whole glyph atlas, evicts every
+    /// demand-filled cache slot, re-derives every layout constant and rescales
+    /// the scroll, and it is still held to a keystroke's budget. And **a bigger
+    /// font must not make typing slower**, which is the one a zoom feature is
+    /// most likely to break quietly: the commit path is supposed to build the
+    /// same instances at any size, so a regression there means the zoom left
+    /// something per-keystroke behind it.
+    ///
+    /// It steps in and back out rather than one way, so the pass ends where it
+    /// started and every sample is a real rebuild — zooming to a size already
+    /// on screen is a no-op the row must not be allowed to average in.
+    private func beginZoom() {
+        view.recorder.reset()
+        var left = 24
+        func step() {
+            guard left > 0 else {
+                drain {
+                    self.zoomPresented = self.view.recorder.presentedSamples
+                    self.beginZoomedTyping()
+                }
+                return
+            }
+            // `=` is keyCode 24 and `-` is 27 on a US layout; `Commands` binds
+            // ⌘= for zoom in and ⌘- for zoom out.
+            let zoomIn = left % 2 == 0
+            send(characters: zoomIn ? "=" : "-", keyCode: zoomIn ? 24 : 27,
+                 modifiers: [.command])
+            left -= 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.023) { step() }
+        }
+        step()
+    }
+
+    /// The paced typing pass again, two steps zoomed in.
+    private func beginZoomedTyping() {
+        send(characters: "=", keyCode: 24, modifiers: [.command])
+        send(characters: "=", keyCode: 24, modifiers: [.command])
+        guard view.zoomIndex != Zoom.defaultIndex else {
+            FileHandle.standardError.write(
+                "zoom pass: the window never changed size — the pass measured nothing\n".data(using: .utf8)!)
+            exit(4)
+        }
+        let doc = app.doc
+        doc.caret = doc.buffer.count / 2
+        doc.revealCaret(cellWidthPx: app.cellWidthPx, cellHeightPx: app.cellHeightPx,
+                        viewportRows: app.viewportRows, viewportCols: app.viewportCols)
+        view.recorder.reset()
+        runKeys(count: 200, gapMs: 23) { [weak self] in
+            guard let self else { return }
+            self.drain {
+                self.zoomedTypingCommit = self.view.recorder.commitSamples
+                // Back to the shipping size, so the RSS and draw-call numbers
+                // reported at the end describe the product's default state.
+                self.send(characters: "0", keyCode: 29, modifiers: [.command])
+                self.drain { self.finish() }
+            }
+        }
     }
 
     // MARK: - Plumbing
@@ -348,6 +410,9 @@ final class EditorBench {
         guard (try? out.write(toFile: path, atomically: true, encoding: .utf8)) != nil else { return nil }
         return path
     }
+
+    private var zoomPresented: [Double] = []
+    private var zoomedTypingCommit: [Double] = []
 
     private func progressed() { lastProgress = monotonicNow() }
 
@@ -495,7 +560,8 @@ final class EditorBench {
         // domain. Refuse to publish rather than gate on garbage.
         for (name, samples) in [("scroll", scrollPresented), ("select", selectPresented),
                                 ("typing", typingCommit), ("overlay", overlayCommitMs),
-                                ("tab switch", tabSwitchPresented)] {
+                                ("tab switch", tabSwitchPresented), ("zoom", zoomPresented),
+                                ("zoomed typing", zoomedTypingCommit)] {
             if let bad = samples.first(where: { $0 > 1000 || $0 < 0 }) {
                 FileHandle.standardError.write(
                     "editor bench INVALID: \(name) produced a \(bad) ms sample — that is a clock-domain bug, not a latency\n"
@@ -504,9 +570,10 @@ final class EditorBench {
             }
         }
         guard !typingCommit.isEmpty, scrollPresented.count >= 20, !selectPresented.isEmpty,
-              !overlayCommitMs.isEmpty, !tabSwitchPresented.isEmpty else {
+              !overlayCommitMs.isEmpty, !tabSwitchPresented.isEmpty,
+              !zoomPresented.isEmpty, !zoomedTypingCommit.isEmpty else {
             FileHandle.standardError.write(
-                "editor bench: thin pass (typing=\(typingCommit.count) scroll=\(scrollPresented.count) select=\(selectPresented.count) overlay=\(overlayCommitMs.count) tabs=\(tabSwitchPresented.count)) — too few presents landed to publish\n"
+                "editor bench: thin pass (typing=\(typingCommit.count) scroll=\(scrollPresented.count) select=\(selectPresented.count) overlay=\(overlayCommitMs.count) tabs=\(tabSwitchPresented.count) zoom=\(zoomPresented.count) zoomedTyping=\(zoomedTypingCommit.count)) — too few presents landed to publish\n"
                     .data(using: .utf8)!)
             exit(4)
         }
@@ -516,6 +583,8 @@ final class EditorBench {
         let select = summarize(selectPresented)
         let overlay = summarize(overlayCommitMs)
         let tabs = summarize(tabSwitchPresented)
+        let zoom = summarize(zoomPresented)
+        let zoomTyping = summarize(zoomedTypingCommit)
         let fps = window.screen?.maximumFramesPerSecond ?? 60
         let suffix = fps >= 100 ? "120hz" : "60hz"
 
@@ -529,6 +598,10 @@ final class EditorBench {
                      selectPresented.count, select.p50, select.p99))
         print(String(format: "tab switch          n=%d: p50 %.2f  p99 %.2f ms  (%d tabs)",
                      tabSwitchPresented.count, tabs.p50, tabs.p99, app.documents.count))
+        print(String(format: "zoom step           n=%d: p50 %.2f  p99 %.2f ms",
+                     zoomPresented.count, zoom.p50, zoom.p99))
+        print(String(format: "typing zoomed in    n=%d: commit p50 %.2f  p99 %.2f ms",
+                     zoomedTypingCommit.count, zoomTyping.p50, zoomTyping.p99))
         print(String(format: "overlay keystroke   n=%d: commit p50 %.2f  p99 %.2f ms  (%d candidates)",
                      overlayCommitMs.count, overlay.p50, overlay.p99, app.fileIndex.paths.count))
         if app.fileIndex.paths.count < Self.treeFiles {
@@ -552,6 +625,8 @@ final class EditorBench {
                 "L2_local_render.selection_drag_to_presented_\(suffix)_p99_ms": select.p99,
                 "L2_local_render.tab_switch_to_presented_\(suffix)_p99_ms": tabs.p99,
                 "L2_local_render.overlay_keystroke_to_commit_p99_ms": overlay.p99,
+                "L2_local_render.zoom_step_to_presented_\(suffix)_p99_ms": zoom.p99,
+                "L2_local_render.keystroke_to_commit_zoomed_p99_ms": zoomTyping.p99,
                 "L7_steady_state.rss_with_1mb_file_mb": rssMb,
             ])
         } catch {
