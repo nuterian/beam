@@ -2,15 +2,27 @@ import CoreText
 import CoreGraphics
 import Metal
 
-/// Rasterizes printable ASCII (32...126) plus a solid block (index 95, used as
-/// the cursor) into one grayscale Metal texture, laid out as a fixed 16x6 grid
-/// of equal cells so the shader derives UVs from the glyph index alone.
-/// CoreText shapes and rasterizes; the GPU only samples — the Zed/GPU-terminal
-/// approach (PLAN.md §2). All metrics are in device pixels.
+/// Rasterizes printable ASCII (32...126) plus a small set of hand-drawn shape
+/// glyphs into one grayscale Metal texture, laid out as a fixed 16x7 grid of
+/// equal cells so the shader derives UVs from the glyph index alone. CoreText
+/// shapes and rasterizes; the GPU only samples — the Zed/GPU-terminal approach
+/// (PLAN.md §2). All metrics are in device pixels.
+///
+/// Beam draws its entire UI from this atlas — roster, join code, cursors, HUD.
+/// "No AppKit controls" is only affordable because adding a UI element means
+/// adding a glyph here, not adding a view.
 final class GlyphAtlas {
     static let atlasCols = 16
-    static let atlasRows = 6
+    static let atlasRows = 7
+
+    /// Solid cell — the text cursor, and the "pixel" the join code is drawn from.
     static let blockGlyphIndex: UInt16 = 95
+    /// Small centered disc — the peer chip in the roster.
+    static let dotGlyphIndex: UInt16 = 96
+    /// Thin full-width rule on the cell's baseline — separators.
+    static let ruleGlyphIndex: UInt16 = 97
+    /// Thin left-edge bar — a peer's remote caret (distinct from your own block).
+    static let barGlyphIndex: UInt16 = 98
 
     let texture: MTLTexture
     let cellWidthPx: Int
@@ -57,9 +69,32 @@ final class GlyphAtlas {
             CTFontDrawGlyphs(font, &glyph, &position, 1, ctx)
         }
 
-        // Solid block cell for the cursor at index 95 (atlas col 15, row 5).
-        ctx.fill(CGRect(x: CGFloat(15 * cellWidthPx), y: 0,
-                        width: CGFloat(cellWidthPx), height: CGFloat(cellHeightPx)))
+        // --- Shape glyphs, drawn rather than shaped: no font on the system has
+        // these at exactly our cell metrics, and a mismatched box-drawing glyph
+        // is the one thing that would make the grid look accidental. ---
+        let w = CGFloat(cellWidthPx), h = CGFloat(cellHeightPx)
+        /// Bottom-left origin of a glyph cell, from its index.
+        func cellOrigin(_ index: Int) -> CGPoint {
+            let col = index % Self.atlasCols, row = index / Self.atlasCols
+            return CGPoint(x: CGFloat(col) * w, y: CGFloat(atlasH) - CGFloat(row + 1) * h)
+        }
+
+        // 95 — solid block.
+        var o = cellOrigin(Int(Self.blockGlyphIndex))
+        ctx.fill(CGRect(x: o.x, y: o.y, width: w, height: h))
+
+        // 96 — centered disc, ~40% of the cell width.
+        o = cellOrigin(Int(Self.dotGlyphIndex))
+        let r = w * 0.20
+        ctx.fillEllipse(in: CGRect(x: o.x + w / 2 - r, y: o.y + h / 2 - r, width: r * 2, height: r * 2))
+
+        // 97 — thin full-width rule, vertically centered.
+        o = cellOrigin(Int(Self.ruleGlyphIndex))
+        ctx.fill(CGRect(x: o.x, y: o.y + h / 2, width: w, height: max(1, scale)))
+
+        // 98 — thin left-edge bar, full height.
+        o = cellOrigin(Int(Self.barGlyphIndex))
+        ctx.fill(CGRect(x: o.x, y: o.y, width: max(1, scale * 1.5), height: h))
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r8Unorm, width: atlasW, height: atlasH, mipmapped: false)

@@ -25,6 +25,11 @@ jobs:
           mkdir -p perf/results
           printf '{\n  "L1_lifecycle.binary_size_kb": %s,\n  "L1_lifecycle.linked_dylibs": %s\n}\n' "$size_kb" "$dylibs" > perf/results/l1-ci-counters.json
           cat perf/results/l1-ci-counters.json
+      - name: Pairing + encrypted transport (headless)
+        # Screen-independent, so unlike every timing bench this one really runs
+        # here: SAS agreement, machine-in-the-middle divergence, op round trip,
+        # and the deterministic bytes/keystroke wire counter.
+        run: .build/release/beam --verify-session --out perf/results/l6-session.json
       - name: Package + verify launch
         run: |
           scripts/package_app.sh

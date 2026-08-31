@@ -6,10 +6,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let config: AppConfig
     private var window: NSWindow!
     private var view: GridView!
+    private var app: AppModel!
     private var bench: TypingBench?
     private var idleBench: IdleBench?
+    private var joinBench: JoinBench?
     private var probe: PresentProbe?
-    private var discovery: DiscoveryService?
     private var didFinishLaunchingAt: Double = 0
     private var rendererReadyAt: Double = 0
     private var userActivityTimer: Timer?
@@ -45,7 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.isReleasedWhenClosed = false
 
-        view = GridView(renderer: renderer)
+        app = AppModel(localName: DiscoveryService.defaultName())
+        view = GridView(renderer: renderer, app: app)
         if case .flashOnKey = config.mode { view.flashOnKey = true }
         if let budgets = try? loadBudgets(path: defaultBudgetsPath()) {
             let fps = window.screen?.maximumFramesPerSecond ?? 60
@@ -59,35 +61,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         switch config.mode {
-        case .benchTyping, .benchLaunch, .benchIdle, .verifyLaunch, .probePresents:
-            // Benches must measure an unoccluded window: WindowServer drops
-            // presents from occluded windows (measured: presentedTime == 0 for
-            // every frame). Float above everything, on every Space — including
-            // over fullscreen apps — so the machine's user can't accidentally
-            // occlude a run by switching Spaces.
-            window.level = .floating
-            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            window.orderFrontRegardless()
-            // Unattended runs: the screensaver occludes everything and every
-            // present drops (measured — see PLAN.md §5-L2). Declaring user
-            // activity dismisses and suppresses it for the duration.
-            declareUserActivity()
-            userActivityTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-                self?.declareUserActivity()
+        case .benchTyping, .benchIdle, .probePresents:
+            app.startInEditor()
+            prepareBenchWindow()
+        case .benchLaunch, .verifyLaunch:
+            prepareBenchWindow()
+        case .benchJoin(let role, _):
+            // Two processes, and activation is exclusive: the one that is not
+            // active never has its window reported visible, so it must not use
+            // occlusionState to decide whether to render. Presents are the
+            // ground truth here — see GridView.assumeVisible.
+            view.assumeVisible = true
+            // Host left, guest right: two visible, NON-OVERLAPPING windows.
+            // WindowServer drops every present from an occluded window, so a
+            // two-process bench that stacked its windows would measure fiction.
+            prepareBenchWindow()
+            if let screen = window.screen ?? NSScreen.main {
+                let f = screen.visibleFrame
+                let w = min(700, f.width / 2 - 20)
+                let x = role == .host ? f.minX + 10 : f.minX + w + 30
+                window.setFrame(NSRect(x: x, y: f.minY + 40, width: w, height: min(600, f.height - 80)),
+                                display: true)
             }
-            // Fail loudly if the first frame can't reach the glass (occluded
-            // screen / screensaver) instead of retrying forever — a hung bench
-            // is worse than a red one.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
-                guard let self, !self.firstFrameSeen else { return }
-                let vis = self.window.occlusionState.contains(.visible)
-                FileHandle.standardError.write(
-                    "BEAM_LAUNCH_TIMEOUT: no frame reached the display in 15 s (window visible=\(vis)). An occluded screen (screensaver?) drops all presents — benches need a visible screen.\n"
-                        .data(using: .utf8)!)
-                exit(6)
-            }
-        case .normal, .flashOnKey:
-            break
+        case .normal, .flashOnKey, .verifySession, .dumpScene:
+            break  // both exit in main.swift before any window exists
+        }
+    }
+
+    /// Benches must measure an unoccluded window: WindowServer drops presents
+    /// from occluded windows (measured: presentedTime == 0 for every frame).
+    /// Float above everything, on every Space — including over fullscreen apps
+    /// — so the machine's user can't accidentally occlude a run by switching
+    /// Spaces.
+    private var isJoinBench: Bool {
+        if case .benchJoin = config.mode { return true }
+        return false
+    }
+
+    private var occlusionPollTimer: Timer?
+
+    /// Diagnostic only (BEAM_OCCLUSION_POLL=1): watch how this window's
+    /// visibility evolves. Two-process bench runs live or die on this.
+    private func startOcclusionPoll(_ tag: String) {
+        var n = 0
+        occlusionPollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            n += 1
+            FileHandle.standardError.write(
+                "[\(tag)] t=\(n) vis=\(self.window.occlusionState.contains(.visible)) raw=\(self.window.occlusionState.rawValue) appActive=\(NSApp.isActive) key=\(self.window.isKeyWindow)\n".data(using: .utf8)!)
+        }
+    }
+
+    private func prepareBenchWindow() {
+        window.level = .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.orderFrontRegardless()
+        if ProcessInfo.processInfo.environment["BEAM_OCCLUSION_POLL"] == "1" {
+            startOcclusionPoll(ProcessInfo.processInfo.environment["BEAM_TAG"] ?? "\(getpid())")
+        }
+        // Unattended runs: the screensaver occludes everything and every
+        // present drops (measured — see PLAN.md §5-L2). Declaring user
+        // activity dismisses and suppresses it for the duration.
+        declareUserActivity()
+        userActivityTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.declareUserActivity()
+        }
+        // Fail loudly if the first frame can't reach the glass (occluded
+        // screen / screensaver) instead of retrying forever — a hung bench
+        // is worse than a red one.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, !self.firstFrameSeen else { return }
+            let vis = self.window.occlusionState.contains(.visible)
+            FileHandle.standardError.write(
+                "BEAM_LAUNCH_TIMEOUT: no frame reached the display in 15 s (window visible=\(vis)). An occluded screen (screensaver?) drops all presents — benches need a visible screen.\n"
+                    .data(using: .utf8)!)
+            exit(6)
         }
     }
 
@@ -125,23 +173,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .benchIdle(let seconds, let out):
             idleBench = IdleBench(seconds: seconds, outPath: out)
             idleBench?.start()
+        case .benchJoin(let role, let out):
+            joinBench = JoinBench(view: view, window: window, app: app, role: role, outPath: out)
+            joinBench?.start()
         case .probePresents:
             probe = PresentProbe(view: view, window: window)
             probe?.start()
-        case .normal, .flashOnKey:
-            view.statusText = "beam · alone on this network"
-            let d = DiscoveryService()
-            d.onChange = { [weak self] count, warning in
-                if let warning {
-                    self?.view.statusText = "beam · \(warning)"
-                } else {
-                    self?.view.statusText = count == 0
-                        ? "beam · alone on this network"
-                        : "beam · \(count) peer\(count == 1 ? "" : "s") nearby"
-                }
-            }
-            d.start()
-            discovery = d
+        case .normal, .flashOnKey, .verifySession, .dumpScene:
+            app.startDiscovery()
         }
     }
 

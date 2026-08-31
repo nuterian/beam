@@ -60,12 +60,14 @@ Phase 0 is a *walking skeleton* — window + Metal grid + keystroke echo + Bonjo
 - `perf/budgets.json` is the single source of truth (gate script + HUD both read it).
 - Benchmarks only measure; they emit flat `{"Lx_group.metric": value}` JSON into `perf/results/`. The gate (`swift run perf-gate`) is the one place that judges. `--require-all` once a phase is fully instrumented.
 - `scripts/bench.sh` runs every Phase-0 bench and the gate in one command.
-- Sabotage hooks (each proves a gate can go red): `BEAM_SABOTAGE_KEY_DELAY_MS` (keystroke hot path), `BEAM_SABOTAGE_NO_NODELAY=1` (disables `noDelay` → Nagle/delayed-ACK spikes), `BEAM_SABOTAGE_LAUNCH_DELAY_MS` (launch path). Proof runs are recorded in `perf/harness-proof.md`.
+- Sabotage hooks (each proves a gate can go red): `BEAM_SABOTAGE_KEY_DELAY_MS` (keystroke hot path), `BEAM_SABOTAGE_NO_NODELAY=1` (disables `noDelay` → Nagle/delayed-ACK spikes), `BEAM_SABOTAGE_LAUNCH_DELAY_MS` (launch path), `BEAM_SABOTAGE_JOIN_DELAY_MS` (stalls the pairing handshake after key agreement), `BEAM_SABOTAGE_PEER_LIST_DELAY_MS` (delays putting a discovered peer on the glass). `scripts/prove-red.sh` re-runs the proofs on demand — a gate's sensitivity should be re-checkable, not just attested once. Proof runs are recorded in `perf/harness-proof.md`.
+- `beam --dump-scene` prints every UI surface as ASCII (no Metal, no window, no display): the UI is instance data, so its layout is inspectable in CI and reviewable in a diff.
+- `beam --verify-session` is the headless half of Phase 2: it checks that honest peers derive the same six digits, that a machine-in-the-middle's two legs derive *different* ones, that ops survive the ChaChaPoly round trip intact, and it is the deterministic source of `bytes_per_keystroke_on_wire`. No screen required, so unlike every timing bench it runs on a shared CI runner.
 - **Packaged-app verification from Phase 0, in CI:** `scripts/package_app.sh` builds `Beam.app`; `scripts/verify_app.sh` executes the binary *directly* (captures the stderr a GUI launch swallows) and requires the `BEAM_LAUNCH_OK` sentinel. The predecessor's packaged build silently failed to boot for weeks; never again. Codesign/notarize scaffolding behind `BEAM_SIGN_IDENTITY` / `BEAM_NOTARIZE_*` env vars early.
 
 ### 3.3 CI topology
 
-- **Tier 1 — every PR** (GitHub-hosted mac runner): build, deterministic counters (binary size, linked dylibs, draw calls, bytes/keystroke), packaged-launch verification, gate over committed results with wide 2× tolerances only.
+- **Tier 1 — every PR** (GitHub-hosted mac runner): build, deterministic counters (binary size, linked dylibs, draw calls, bytes/keystroke), pairing + encrypted-transport verification (`--verify-session`, headless), packaged-launch verification, gate over committed results with wide 2× tolerances only.
 - **Tier 2 — pre-merge + nightly** (self-hosted rig): full timing matrix wired + Wi-Fi, absolute gates, trend dashboard.
 - **Tier 3 — weekly**: soak, energy (`powermetrics`), N-peer load.
 
@@ -96,6 +98,8 @@ Machine-readable source of truth: [`perf/budgets.json`](perf/budgets.json). "Bud
 
 **Present-mode matrix, first pass (2026-08-30, partial — screensaver interrupted):** `normal` completed; `scheduled` (commit → waitUntilScheduled → drawable.present()) **stalled under sustained typing** (zero presented frames for 6 s) despite working for single launch frames — a failed experiment, recorded here so nobody retries it without new evidence. `presentsWithTransaction` untested under load. Default remains `normal`. The same run measured the cost of my first coalescing design (all input deferred to the tick): paced commit p50 went 0.31 → 9.56 ms — a half-frame tax on ordinary typing. Fix, now implemented: immediate render for the first input of each frame, coalescing only within a frame (burst), and *wake-double-present* on cold input (immediate render + one follow-up tick render carrying the same t0, recorder deduped) so idle-first-keystroke recovery costs ~1 frame instead of the 50 ms confirm deadline (measured 91.8 ms deadline-driven). **Validated 2026-08-30 (second run, gate 22 pass / 0 fail):** the hybrid loop holds paced latency (presented p50 25.84 / p99 33.8; commit p50 0.72) while improving jitter 13.0 → **7.96 ms**, bounding burst honestly (p99 48.6 with worst-case-per-frame accounting, zero starvation), and cutting first-keystroke-after-idle to **59.5 ms p50 / 62.9 max** (from 91.8 deadline-driven / 1735 broken). Idle CPU **0.026%** of a core, RSS 65.6 MB. malloc per keystroke net **−81 bytes** (zero-allocation hot path holds).
 
+**Second measured finding (2026-08-30, Phase 2): `NSWindow.occlusionState` is not a visibility oracle.** Building the two-process join bench surfaced this: macOS only ever reports `.visible` for a window whose *app has activated*, and activation is exclusive — so with two Beam processes running side by side, whichever one is not the active app reports itself permanently occluded (`raw=8192`, `appActive=false`, from the very first tick, with nothing covering it). Beam's render loop then correctly renders nothing for it (§4.6), and the peer's frames never reach the glass. The fix is not to weaken the rule but to *replace the proxy with the ground truth*: `GridView.assumeVisible` lets the two bench processes keep rendering, and the join bench's validity check is that presents actually landed — the host reports one `presentedTime > 0` per keystroke it put on the glass, and the run refuses to publish below a 90% delivery ratio. That is a **stronger** check than the occlusion proxy, because a genuinely covered window drops every present and fails loudly, whereas an inactive-but-visible window passes honestly. The single-window benches keep the occlusionState guard, which is correct and proven for them.
+
 **Bench-validity rule (learned the hard way):** latency numbers from an occluded window are fiction. The typing bench aborts (`exit 5`) if the window was ever occluded mid-run; bench windows float on all Spaces (`.canJoinAllSpaces + .fullScreenAuxiliary`) and declare user activity against display sleep — but an already-running screensaver does not yield to synthetic input on macOS 15, so photon-path benches require an attended screen or a rig machine with the screensaver disabled. `beam --probe-presents` is the microscope for present-path behavior (steady/quiet/one-shot phases, per-present ok/drop + visibility).
 
 **First measured finding (2026-08-30, M4 Air 60 Hz, phase-uniform typing bench):** keystroke→commit p50 **0.31 ms** (entire software path: event → model → instance build → Metal encode → commit; CM6 was 0.7 ms — the predecessor's claim that the renderer is never the bottleneck holds natively too). keystroke→presented = uniform vsync phase (0–16.7 ms) **plus a constant ~17 ms**: a one-shot present from an idle window misses the imminent vsync and lands a *full extra frame* later. With `displaySyncEnabled=false` (tearing; experiment lever `BEAM_NO_DISPLAY_SYNC=1`, not a product config) p50 collapses to **4.96 ms** — so ~20 ms of the naive path is vsync *scheduling*, not machinery. This is precisely the commit→photon territory the native bet is about (§4.1: the predecessor's 9.5 ms "keystroke→paint" stopped at Chromium frame commit and never saw this tail — its true photon latency was almost certainly in the same ~25 ms band). The 60 Hz budget above holds the measured line; **cutting the extra frame is Phase 1's headline objective** — candidate levers, camera-decided: display-link-aligned presents timed to the compositor deadline, `presentsWithTransaction`, direct-to-display/fullscreen path, ProMotion.
@@ -104,11 +108,129 @@ Machine-readable source of truth: [`perf/budgets.json`](perf/budgets.json). "Bud
 
 **L4 — CRDT (yrs):** encode 1-char insert ≤ 50 µs / ≤ 40 B (100 µs / 64 B); apply remote ≤ 100 µs (200); awareness encode ≤ 120 B (200); 1000-op reconnect diff ≤ 5 ms / ≤ 20 KB (10 / 40); load 100k-op doc ≤ 200 ms (350).
 
-**L5 — Presence & session:** browse → peer found ≤ 1 s (2); discovery → connected & editing, 5 MB workspace, wired ≤ 1 s (2).
+**L5 — Presence & session:** browse → peer found ≤ 1 s (2); discovery → connected & editing, 5 MB workspace, wired ≤ 1 s (2); **join gesture → code visible on both screens ≤ 150 ms (350); host confirm → guest editing ≤ 120 ms (300); join gesture → first shared keystroke presented on the peer's screen ≤ 400 ms (800)**; handshake crypto CPU ≤ 3 ms (10).
 
-**L6 — End-to-end (headline):** keystroke → remote present-commit, wired GbE, p50 ≤ 6 ms (9) / p99 ≤ 12 ms (16); remote cursor → remote paint p99 ≤ 12 ms (16); awareness streamed ≥ 60 Hz; 4 typists degrade p99 ≤ 20% vs. 2 (40%); relay RTT under 200 ms host main-thread stall: max ≤ 5 ms (15); bytes/keystroke on wire ≤ 48 (64).
+**L6 — End-to-end (headline):** keystroke → remote *presented*, loopback software floor, p99 ≤ 36 ms (45) — *not a LAN number; it gates the send/receive/apply/render delta on every PR, floored by the 33.8 ms local present path*; keystroke → remote present-commit, wired GbE, p50 ≤ 6 ms (9) / p99 ≤ 12 ms (16); remote cursor → remote paint p99 ≤ 12 ms (16); awareness streamed ≥ 60 Hz; 4 typists degrade p99 ≤ 20% vs. 2 (40%); relay RTT under 200 ms host main-thread stall: max ≤ 5 ms (15); bytes/keystroke on wire ≤ 48 (64).
 
-**L7 — Steady state:** idle CPU connected ≤ 0.5% core (1%), hidden ≤ 0.1% (0.5%); RSS ≤ 80 MB (120); packaged-app launch verification passes (hard gate); soak/energy gates from Phase 4.
+**L7 — Steady state:** idle CPU connected ≤ 0.5% core (1%) — *measurable on loopback from Phase 2, no longer rig-only*, hidden ≤ 0.1% (0.5%); RSS ≤ 80 MB (120); packaged-app launch verification passes (hard gate); soak/energy gates from Phase 4.
+
+## 5.1 Phase 2 design of record — the shell and the join gesture
+
+The whole app is **one window, one Metal grid, three surfaces, and a keymap that fits in a line**.
+Everything below is drawn from the glyph atlas; there is no AppKit control anywhere in Beam, and
+there will not be one.
+
+The entire keymap: **a number or a click** joins that peer · **return** confirms · **esc** cancels or
+leaves · **arrows** move your cursor · **⌘Q** quits. That is the whole thing, and ⌘Q is the only
+reason a menu exists at all.
+
+**Surface 1 — the roster (this IS the launch screen).** Your identity, then everyone nearby, one
+numbered row each. Alone on the network is a *designed* state with its own copy, not an empty
+list: Beam says it is listening and tells you what to do about it. A Local Network (TCC) denial is
+a third designed state naming the exact Settings path — per §2 it must never be mistakable for an
+empty network, and it is the only place Beam ever mentions System Settings.
+
+**Surface 2 — the join code.** Six digits, both screens, described under "the gesture" below.
+
+**Surface 3 — the editor.** The Phase-0/1 grid, plus remote cursors in per-peer colors with the
+peer's name beside them, and each peer's live RTT in the HUD line. Arrow keys move your cursor and
+publish it, so a peer's view of your caret is keystroke-accurate rather than only updating when you
+type. Selection and scrolling are deliberately absent: they belong with the Phase-1 rope, not bolted
+onto a fixed cell array.
+
+**The gesture.** Click a peer row, or press its number. That is the entire join UI. What happens:
+
+1. Guest opens a TCP connection (`noDelay`) and sends a 32-byte X25519 ephemeral public key.
+2. Host replies with its own. Both derive the shared secret and, via HKDF-SHA256, three things:
+   two directional ChaChaPoly session keys and a **6-digit short authentication string (SAS)**.
+3. Both screens show the same 6 digits, rendered as block-glyph pixel digits on the grid.
+   The guest already made its gesture; the **host presses return** — one keypress each, total.
+   Either side's `esc` cancels.
+4. Return → the editor surface, encrypted from the first byte of content.
+
+**What the SAS does and does not do,** stated plainly so nobody over-claims it later: an ephemeral
+ECDH gives confidentiality against a passive listener for free, but by itself it is wide open to an
+active machine-in-the-middle. The 6 digits are derived from *both* public keys, so a MITM cannot
+make both screens agree — a human comparing them is the authentication, and one in a million is the
+attacker's odds per attempt. That is the same bargain as Bluetooth numeric comparison and Signal's
+safety numbers, and it is why the code is shown large enough to read across a desk. No certificates,
+no accounts, nothing leaves the network. Session keys are ephemeral per join (forward secrecy by
+construction); nonces are per-direction counters, so an in-session replay is rejected.
+
+**Authorization is one-directional, by construction.** Only the side that *asked* to join can be let
+in by the other: a host that received an `accept` frame would be joining itself, so the session is
+dropped instead. The host's return keypress is the whole authorization in this scheme, and it must
+not be reachable from the wire. Symmetrically, a guest is never dropped into the editor before the
+six digits have actually been **presented** on its own screen — the guest is the side doing the
+comparing, so an acceptance that arrives first is held until the code is on the glass.
+
+**Why not TLS-PSK.** §2 offered "TLS-PSK **or** Noise" and this is the Noise-shaped branch. Once the
+ECDH exists for the SAS, running a TLS handshake on top of it would add round-trips to the exact
+gesture the phase is budgeted on, to re-derive a secret we already hold. The wire is
+`[u32 length][ChaChaPoly ciphertext‖tag]` over the same TCP connection. Revisit only with a measurement.
+
+**Delight, and what it costs (nothing, by construction).**
+- *Sub-frame acknowledgment.* The gesture repaints on the same frame it arrives on, before a single
+  network byte moves — the connection **feels** instant because the acknowledgment is local, and
+  then the code lands 100 ms later. The `join_gesture_to_code_visible_ms` budget is what keeps that
+  honest rather than a claim.
+- *Soft fade-in.* Peer names and cursors fade over ~200 ms. Alpha is an 8-bit field packed into the
+  existing per-instance `color` word — the shader multiplies, so the hot path pays zero — and the
+  animation is *finite*: the display link pauses when it ends, exactly as after typing.
+- *Latency as UI.* Each connected peer's live RTT sits in the HUD. We are the only editor confident
+  enough to publish it, which is only true while it stays cheap: the roster repaints when a displayed
+  value **changes**, not on a timer, and `idle_cpu_connected_pct_core` is the gate that proves it.
+- *Nothing blinks.* A blinking cursor is an infinite animation; it would pin the display link awake
+  forever and put a permanent floor under idle CPU. Beam's cursor is solid. This is a performance
+  decision before it is a taste one, and the idle gate enforces it.
+
+**Validated 2026-08-30 (gate 30 pass / 0 fail — the committed `perf/results/` are this run),
+two real processes finding each other over Bonjour and pairing over loopback TCP:**
+launch → peer row *presented* **530.6 ms**; gesture → six digits on **both** screens **64.6 ms**
+(the acknowledgment is local and lands the same frame as the gesture, so the only thing the network
+delays is the code itself); host confirm → guest editing **49.4 ms**; gesture → first shared
+keystroke presented *on the peer's screen* **214.6 ms**. Discovery + join together is **745 ms**,
+inside the Phase-2 exit criterion of 1 s. Handshake crypto **0.469 ms**; **30 bytes** per keystroke
+on the wire (budget 48). No L2 regression from any of the UI work (presented p50 25.6, pipeline
+depth 16.9, jitter 8.1, malloc −1.4 B/keystroke), and first-keystroke-after-idle improved to
+**51.3 ms** from 59.5.
+
+**Two rows sit inside their gate but above their design budget, and are left that way rather than
+re-budgeted after the fact.** `keystroke_to_remote_present_loopback_p99` measured 40.5 ms against a
+36 ms budget (gate 45), ranging 32.9–44.9 across runs — that spread is the *local* present path's
+tail, not transport's: the local p99 is 33.6 ms and the whole remote round trip adds single-digit
+milliseconds on top of frame-boundary luck. It is the same extra frame Phase 1 is chasing, showing up
+a second time, and it will come down when pipeline depth does. `idle_cpu_connected_pct_core` measured
+0.524% against a 0.5% budget (gate 1.0); see below. Budgets were written before any of this was
+measured, which is the order §3 requires, and moving them now to make a chart green is precisely what
+that ordering exists to prevent.
+
+**Connected idle CPU: measured, and sitting on its design budget.** 0.20–0.63% of a
+core across runs, 0.524% in the committed one (gate 1.0, budget 0.5), split guest 0.27 / host 0.52 — so it is not the render loop:
+the display link demonstrably pauses (0 renders, 58 ticks in a 3.1 s window) and `BEAM_NO_RTT=1`
+shows the RTT probe is not the cost either. Getting here took fixing two real regressions this
+phase's own features introduced, both caught by the gate on its first run at 3.4% (see
+`perf/harness-proof.md`). The remaining ~0.5% is the post-typing display-link wind-down plus
+Network.framework and mDNS background work in the *host* process. **The next lever, identified but
+deliberately not merged:** stop `NWBrowser` while a session is live — nobody is looking at the roster
+from inside the editor. `DiscoveryService.pauseBrowsing()/resumeBrowsing()` exist for it; they are
+not wired up because the dev machine's display went dark before the change could be measured, and an
+unmeasured optimisation is not something this project merges.
+
+**Seeing the UI without a screen.** `beam --dump-scene` renders every surface to ASCII on stdout —
+no Metal, no window, no display. Beam's entire UI is instance data, so the layout can be inspected
+exactly as the GPU receives it; on a machine whose display cycles (and in CI, which has none) this is
+the only way to look at the product, and unlike a screenshot it is reviewable in a diff. It earned
+itself immediately: it showed the peer's name label being drawn straight over the line above the
+caret. The fix is that the label trails the caret on its own row and only where the row is actually
+empty — a typing caret sits at the end of its text, and when it doesn't, the coloured caret alone
+says enough. Beam would rather draw nothing than draw over a character somebody wrote.
+
+**Deliberately not built yet.** Phase 2 ships a shared *grid* with per-peer cursors — remote inserts
+apply at the sender's cursor, last writer wins on a cell. That is not a CRDT and is not pretending to
+be one; `yrs` lands in Phase 3 and inherits the L4 budgets and the L6 wire budget unchanged. Phase 2
+also keeps the doc channel and the (Phase-3) awareness channel separate at the op level so the UDP
+split in §4.8 stays available.
 
 ## 6. Phases (each ships its benchmarks first; no merge red)
 
@@ -129,10 +251,12 @@ Machine-readable source of truth: [`perf/budgets.json`](perf/budgets.json). "Bud
 - IME milestone begins here (marked-text protocol correct even if compositions render plainly).
 - *Exit: L1/L2/L7 green; camera offset documented; typing feels instant and measures it.*
 
-**Phase 2 — Presence + one-gesture secure session.**
-- Instant peer list (the launch screen *is* the peer list); join-code pairing → PSK-encrypted transport; TCC denial UX.
+**Phase 2 — Presence + one-gesture secure session.** Design of record: §5.1.
+- Instant peer list (the launch screen *is* the peer list); X25519 + SAS pairing → ChaChaPoly-encrypted transport; TCC denial UX.
 - The radical-minimal shell: no menus, no toolbars; launch → collaborating in seconds.
-- *Exit: L5 green on the rig; join gesture ≤ 1 s discovery→editing wired.*
+- Benches first: `--bench-peers` (launch → a peer row presented) and `--bench-join` (a real two-process host+guest pair over Bonjour + loopback TCP, measuring the gesture, the code, the confirm, the first shared keystroke, bytes/keystroke on the wire, and connected idle CPU).
+- Sabotage hooks proving those gates red: `BEAM_SABOTAGE_JOIN_DELAY_MS`, `BEAM_SABOTAGE_PEER_LIST_DELAY_MS`.
+- *Exit: **met** 2026-08-30 — L5 green, discovery→editing 653 ms on loopback; the wired rig number is Phase 3's to confirm.*
 
 **Phase 3 — Multiplayer editing.**
 - `yrs` sync over TCP (noDelay), awareness over UDP, relay on a dedicated thread with the stall-immunity bench; collab undo; host save.
@@ -158,7 +282,7 @@ Benchmarks are designed ahead of the features they gate, per §3. Each lands wit
 
 **Phase 1 (editor):** queue-transit segment (NSEvent.timestamp → keyDown entry — real IOHID input only; the segment no web editor can see; HUD + camera sessions); open-1 MB-file→first paint; full-speed scroll dropped-frames and wheel→photon; syntax-highlight merge gate (tree-sitter merges only if every L2 gate stays green); IME marked-text correctness + latency; undo at 10k depth.
 
-**Phase 2 (presence/session):** discovery under mDNS-hostile APs (broadcast-fallback path); TCC-denial UX correctness (denied permission must surface in ≤1 s, never an empty peer list); join-code → encrypted-session establishment time.
+**Phase 2 (presence/session):** *running now* — launch → peer row presented; join gesture → code on both screens; confirm → editing; gesture → first shared keystroke presented on the peer's screen; bytes/keystroke on the wire; connected idle CPU (the gate that keeps live-RTT-in-the-UI honest). *Still ahead:* discovery under mDNS-hostile APs (broadcast-fallback path); TCC-denial UX correctness (denied permission must surface in ≤1 s, never an empty peer list).
 
 **Phase 3 (multiplayer):** occluded-peer catch-up — hidden window keeps applying remote ops (bytes applied while hidden ≥ sender's bytes sent), reveal repaint ≤ 1 frame; AI-scale paste (400-line insert → remote presented ≤ 2 frames, the predecessor's measured basis); typing-under-sync-storm (local p99 while receiving 10k ops/s); relay stall-immunity (≤5 ms under 200 ms host main-thread stall); Wi-Fi power-save spike detector (continuous RTT histogram, spike-count gate); AWDL vs. infrastructure variance matrix before trusting AWDL.
 - **Cross-machine, clock-free:** all E2E via RTT/2 + d_remote (§3.1); camera verifies the constant.

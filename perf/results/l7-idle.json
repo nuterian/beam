@@ -1,4 +1,4 @@
 {
-  "L7_steady_state.baseline_rss_mb": 65.5625,
-  "L7_steady_state.idle_cpu_foreground_alone_pct_core": 0.0259
+  "L7_steady_state.baseline_rss_mb": 65.6562,
+  "L7_steady_state.idle_cpu_foreground_alone_pct_core": 0.0214
 }

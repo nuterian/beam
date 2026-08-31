@@ -52,8 +52,38 @@ echo "== L3: loopback TCP echo =="
 "$BIN/bench-tcp-echo" --out "$RESULTS/l3-tcp-echo.json"
 
 echo
+echo "== L6: pairing + encrypted transport (headless, no screen needed) =="
+"$BIN/beam" --verify-session --out "$RESULTS/l6-session.json"
+
+echo
 echo "== L5: Bonjour discovery =="
 "$BIN/bench-discovery" --out "$RESULTS/l5-discovery.json" || true
+
+echo
+echo "== L5/L6/L7: join gesture (two real Beam processes, host + guest) =="
+# The host is started FIRST and must be advertising before the guest is
+# cold-launched, so the guest's launch_to_peers_visible number is honest: a peer
+# is already on the network when it starts, and it is never charged for the
+# host's startup. Both windows are visible and side by side — WindowServer drops
+# every present from an occluded window.
+HOSTLOG=.build/join-host.log
+rm -f "$HOSTLOG"
+"$BIN/beam" --bench-join --role host > "$HOSTLOG" 2>&1 &
+HOST_PID=$!
+trap 'kill $HOST_PID 2>/dev/null || true' EXIT
+ready=0
+for _ in $(seq 1 200); do
+  if grep -q BEAM_HOST_READY "$HOSTLOG" 2>/dev/null; then ready=1; break; fi
+  sleep 0.1
+done
+if [ "$ready" != 1 ]; then
+  echo "join bench: host never advertised — log follows" >&2
+  cat "$HOSTLOG" >&2
+  exit 1
+fi
+"$BIN/beam" --bench-join --role guest --out "$RESULTS/l5-join.json"
+kill $HOST_PID 2>/dev/null || true
+trap - EXIT
 
 echo
 echo "== L7: packaged-app launch verification =="

@@ -21,11 +21,39 @@ final class Renderer {
     static let presentMode: PresentMode = PresentMode(
         rawValue: ProcessInfo.processInfo.environment["BEAM_PRESENT_MODE"] ?? "normal") ?? .normal
 
+    /// Palette slots. Beam has no color picker and no theme file: every colour
+    /// in the product is one of these, which is what keeps the whole UI one
+    /// instanced draw call.
+    enum Ink: UInt16 {
+        case fg = 0        // primary text
+        case red = 1       // over budget / error
+        case green = 2     // under budget / connected
+        case dim = 3       // secondary text
+        case faint = 4     // tertiary hints
+        case accent = 5    // Beam's own mark, the join code
+        case peer0 = 6, peer1 = 7, peer2 = 8, peer3 = 9, peer4 = 10, peer5 = 11
+
+        static let peerCount = 6
+        static func peer(_ i: Int) -> Ink {
+            Ink(rawValue: UInt16(6 + ((i % peerCount) + peerCount) % peerCount)) ?? .peer0
+        }
+    }
+
     struct Instance {
         var col: UInt16
         var row: UInt16
         var glyph: UInt16
-        var color: UInt16  // palette index: 0 fg, 1 red, 2 green, 3 dim
+        /// Packed: low 4 bits = Ink slot, high 8 bits = alpha 0...255. Alpha
+        /// lives here so fades cost the hot path exactly nothing — the shader
+        /// multiplies a value it was already reading.
+        var color: UInt16
+
+        init(col: Int, row: Int, glyph: UInt16, ink: Ink, alpha: UInt8 = 255) {
+            self.col = UInt16(truncatingIfNeeded: col)
+            self.row = UInt16(truncatingIfNeeded: row)
+            self.glyph = glyph
+            self.color = (UInt16(alpha) << 8) | (ink.rawValue & 0xF)
+        }
     }
     private struct Uniforms {
         var viewportPx: SIMD2<Float>
@@ -65,13 +93,27 @@ final class Renderer {
         float2 originPx;
     };
     struct Inst { ushort col; ushort row; ushort glyph; ushort color; };
-    struct VSOut { float4 pos [[position]]; float2 uv; ushort color [[flat]]; };
+    struct VSOut { float4 pos [[position]]; float2 uv; ushort color [[flat]]; float alpha [[flat]]; };
 
-    constant float4 palette[4] = {
+    // 16 entries because the ink index is 4 bits wide: a future palette slot
+    // must not be able to read past the end of this array.
+    constant float4 palette[16] = {
+        float4(0.86, 0.87, 0.90, 1.0),  // fg
+        float4(0.95, 0.30, 0.30, 1.0),  // red
+        float4(0.35, 0.85, 0.45, 1.0),  // green
+        float4(0.52, 0.54, 0.58, 1.0),  // dim
+        float4(0.34, 0.36, 0.41, 1.0),  // faint
+        float4(0.45, 0.80, 0.95, 1.0),  // accent
+        float4(0.98, 0.72, 0.35, 1.0),  // peer 0
+        float4(0.55, 0.85, 0.55, 1.0),  // peer 1
+        float4(0.80, 0.62, 0.98, 1.0),  // peer 2
+        float4(0.98, 0.55, 0.62, 1.0),  // peer 3
+        float4(0.40, 0.86, 0.86, 1.0),  // peer 4
+        float4(0.92, 0.86, 0.45, 1.0),  // peer 5
+        float4(0.86, 0.87, 0.90, 1.0),  // 12-15 reserved; alias fg
         float4(0.86, 0.87, 0.90, 1.0),
-        float4(0.95, 0.30, 0.30, 1.0),
-        float4(0.35, 0.85, 0.45, 1.0),
-        float4(0.52, 0.54, 0.58, 1.0),
+        float4(0.86, 0.87, 0.90, 1.0),
+        float4(0.86, 0.87, 0.90, 1.0),
     };
 
     vertex VSOut grid_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
@@ -85,14 +127,15 @@ final class Renderer {
                        1.0 - px.y / u.viewportPx.y * 2.0, 0.0, 1.0);
         float2 cell = float2(g.glyph % 16u, g.glyph / 16u);
         o.uv = (cell + corner) / u.atlasCells;
-        o.color = g.color;
+        o.color = g.color & 0xFu;
+        o.alpha = float(g.color >> 8) / 255.0;
         return o;
     }
 
     fragment float4 grid_fs(VSOut v [[stage_in]],
                             texture2d<float> atlas [[texture(0)]]) {
         constexpr sampler s(coord::normalized, filter::nearest);
-        float a = atlas.sample(s, v.uv).r;
+        float a = atlas.sample(s, v.uv).r * v.alpha;
         float4 c = palette[v.color];
         return float4(c.rgb * a, a);
     }

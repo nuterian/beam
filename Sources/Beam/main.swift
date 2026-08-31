@@ -2,9 +2,15 @@ import AppKit
 
 // Beam — LAN-native collaboration, obsessed with input-to-photon.
 // Modes: (none) normal · --bench-typing [--n N] [--out path] · --bench-launch
+//        · --bench-idle · --bench-join --role host|guest · --probe-presents
 //        · --verify-launch · --flash-on-key (camera calibration)
 
 let config = AppConfig.parse(CommandLine.arguments)
+
+// Headless, screen-independent, and exits before any window exists.
+if case .verifySession(let out) = config.mode { SessionVerify.run(outPath: out) }
+if case .dumpScene = config.mode { SceneDump.run() }
+
 let app = NSApplication.shared
 let delegate = AppDelegate(config: config)
 app.delegate = delegate

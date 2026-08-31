@@ -1,0 +1,9 @@
+{
+  "L1_lifecycle.launch_to_peers_visible_ms": 530.6397,
+  "L5_presence_session.handshake_crypto_cpu_ms": 0.4693,
+  "L5_presence_session.join_confirm_to_editing_ms": 49.3615,
+  "L5_presence_session.join_gesture_to_code_visible_ms": 64.6365,
+  "L5_presence_session.join_gesture_to_first_shared_keystroke_ms": 214.6370,
+  "L6_end_to_end.keystroke_to_remote_present_loopback_p99_ms": 40.5166,
+  "L7_steady_state.idle_cpu_connected_pct_core": 0.5240
+}
