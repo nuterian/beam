@@ -121,9 +121,18 @@ enum SessionVerify {
         var received: [UInt8] = []
         var hostSAS = "", guestSAS = ""
 
+        // **Both sides, not one.** This waited only on the GUEST's `onPaired`
+        // and then read `hostSAS`, which the host writes from its own queue —
+        // so on a machine slow enough to separate the two callbacks the check
+        // compared a real code against an empty string and reported a SAS
+        // disagreement that had not happened. Seen on a CI runner; it is a race
+        // in the check, and waiting for the side you are about to read is also
+        // the stronger assertion, since it now proves the host derived one at
+        // all rather than assuming it.
+        let hostPaired = DispatchSemaphore(value: 0)
         listener.newConnectionHandler = { conn in
             let s = Session(accepting: conn, localName: "verify-host")
-            s.onPaired = { hostSAS = s.sas }
+            s.onPaired = { hostSAS = s.sas; hostPaired.signal() }
             s.onOp = { inbound in
                 guard inbound.op == .insert, inbound.bytes.count >= 9 else { return }
                 received.append(inbound.bytes[8])
@@ -148,6 +157,9 @@ enum SessionVerify {
 
         guard paired.wait(timeout: .now() + 5) == .success else {
             return (0, 0, ["handshake never completed over loopback"])
+        }
+        guard hostPaired.wait(timeout: .now() + 5) == .success else {
+            return (0, 0, ["the host never reported a pairing"])
         }
         if guestSAS.isEmpty || guestSAS != hostSAS {
             problems.append("live session codes differ: guest \(guestSAS) vs host \(hostSAS)")
