@@ -394,6 +394,15 @@ final class EditorBench {
         // NSEvent will read it in. A real trackpad event needs none of this;
         // this is the cost of synthesizing one.
         cg.timestamp = UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+        // `scrollWheelEvent2Source` fills the LINE-delta axis; `scrollingDeltaY`
+        // on the NSEvent reads the POINT-delta axis when the event claims
+        // precise deltas, and a trackpad sets both. Setting only the first
+        // produced a stream of events whose delta read as zero, so the handler
+        // returned early, nothing moved and the pass recorded **no samples at
+        // all** — which the gate caught as a thin pass rather than as a wrong
+        // number, because that guard exists.
+        cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        cg.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: Double(dy))
         guard let event = NSEvent(cgEvent: cg) else { return }
         window.sendEvent(event)
     }

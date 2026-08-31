@@ -54,6 +54,10 @@ final class TypingBench {
             options: [.latencyCritical, .idleDisplaySleepDisabled],
             reason: "beam typing bench")
         view.recorder.collectAll = true
+        view.onProbePresent = { [weak self] presentedTime in
+            guard let self else { return }
+            if presentedTime > 0 { self.presentsOK += 1 } else { self.presentsDropped += 1 }
+        }
         view.recorder.onPresentedSample = { [weak self] _ in
             self?.lastProgress = monotonicNow()
         }
@@ -146,6 +150,16 @@ final class TypingBench {
     }
 
     private var sawOcclusion = false
+    /// Ground truth, and the last bench in the project to get it. §5.5 states
+    /// the rule generally — *a bench that reports a timing without proving its
+    /// frames reached the glass is reporting fiction* — and this one was still
+    /// trusting `NSWindow.occlusionState` alone, which has now lied three
+    /// times. An occluded run does not merely lose samples: a dropped present
+    /// is re-rendered carrying its ORIGINAL t0, so commit and presented both
+    /// come out a frame or more high and the run looks like a regression
+    /// instead of like an aborted run.
+    private var presentsOK = 0
+    private var presentsDropped = 0
 
     private func sendKey() {
         if !window.occlusionState.contains(.visible) { sawOcclusion = true }
@@ -175,12 +189,16 @@ final class TypingBench {
 
     private func finish() {
         watchdog?.invalidate()
-        if sawOcclusion {
-            // Latency numbers from an occluded window are fiction (presents
-            // drop). Refuse to publish rather than gate on garbage.
-            FileHandle.standardError.write(
-                "typing bench INVALID: window was occluded during the run — keep the Beam window visible (it floats on all Spaces) and re-run\n"
-                    .data(using: .utf8)!)
+        let total = presentsOK + presentsDropped
+        let delivered = total > 0 ? Double(presentsOK) / Double(total) : 0
+        if sawOcclusion || delivered < 0.9 {
+            // Latency numbers from an occluded window are fiction. Refuse to
+            // publish rather than gate on garbage.
+            FileHandle.standardError.write(String(
+                format: "typing bench INVALID: %.0f%% of presents reached the glass (%d of %d)%@ — keep the Beam window visible (it floats on all Spaces) and re-run\n",
+                delivered * 100, presentsOK, total,
+                sawOcclusion ? ", and the window reported itself occluded" : "")
+                .data(using: .utf8)!)
             exit(5)
         }
         guard !pacedPresented.isEmpty, !burstPresented.isEmpty, !idlePresented.isEmpty else {
@@ -212,6 +230,7 @@ final class TypingBench {
         line("first key after idle   ", idlePresented)
         print(String(format: "malloc per keystroke: %.0f bytes, %.1f blocks", mallocBytesPerKey, mallocBlocksPerKey))
         print("draw calls per frame: \(view.renderer.drawCallsLastFrame)")
+        print(String(format: "presents delivered: %.1f%% (%d of %d)", delivered * 100, presentsOK, total))
 
         do {
             try writeResult(to: outPath, metrics: [
