@@ -60,8 +60,16 @@ final class TypingBench {
         watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             if monotonicNow() - self.lastProgress > 6 {
-                FileHandle.standardError.write("typing bench stalled (no presented frames for 6s)\n".data(using: .utf8)!)
-                exit(4)
+                // Exit 6, not 4: "no present landed for six seconds" is the
+                // same fact as the launch timeout — the screen stopped
+                // accepting frames — and it is a re-runnable environment
+                // failure, not a red gate. Exit 4 stays reserved for real
+                // failures (bad data, unwritable results), which must never be
+                // retried into a pass. scripts/gate.sh classifies on this.
+                FileHandle.standardError.write(
+                    "BEAM_PRESENT_STALL: no presented frames for 6 s — the display stopped accepting frames (asleep or occluded); benches need a visible screen\n"
+                        .data(using: .utf8)!)
+                exit(6)
             }
         }
         runKeys(count: warmup, gapMs: 23) { [weak self] in self?.beginPaced() }

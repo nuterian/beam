@@ -107,7 +107,7 @@ final class DiscoveryService {
             guard case let .service(name, _, _, _) = r.endpoint, name != ownName else { continue }
             let seen = firstSeen[name] ?? now
             firstSeen[name] = seen
-            peers.append(Peer(name: name, endpoint: r.endpoint, appearedAt: seen))
+            peers.append(Peer(name: name, endpoint: r.endpoint, appearedAt: seen, inkIndex: Peer.ink(of: name)))
         }
         peers.sort { ($0.appearedAt, $0.name) < ($1.appearedAt, $1.name) }
         if ProcessInfo.processInfo.environment["BEAM_DEBUG"] == "1" {

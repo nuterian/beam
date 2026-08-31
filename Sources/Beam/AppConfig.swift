@@ -11,6 +11,7 @@ enum RunMode {
     case probePresents
     case verifySession(out: String?)
     case dumpScene
+    case screenshot(surface: String, out: String)
 }
 
 enum JoinRole: String {
@@ -43,6 +44,10 @@ struct AppConfig {
             return AppConfig(mode: .benchJoin(role: role, out: out))
         }
         if args.contains("--dump-scene") { return AppConfig(mode: .dumpScene) }
+        if args.contains("--screenshot") {
+            return AppConfig(mode: .screenshot(surface: value(after: "--surface") ?? "all",
+                                               out: value(after: "--out") ?? "docs/shots"))
+        }
         if args.contains("--verify-session") {
             return AppConfig(mode: .verifySession(out: value(after: "--out")))
         }

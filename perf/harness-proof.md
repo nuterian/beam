@@ -98,6 +98,36 @@ runner): honest peers derive the same six digits, a machine-in-the-middle's two
 legs derive **different** ones (asserted, not assumed), 100 ops survive the
 ChaChaPoly round trip intact, and bytes/keystroke on the wire measures 30.
 
+## Round 3 (2026-08-30, the beauty session)
+
+No new gated metric, and deliberately so: aesthetics are not gateable, and the
+rule for this session was that the *existing* suite has to stay green through
+every visual change. What did change is the harness's honesty about its own
+environment, plus one new pair of eyes.
+
+- **`beam --screenshot` — offscreen, screen-independent, CI-runnable.** Renders
+  each surface into an offscreen Metal texture at 2x and writes PNGs, with no
+  window, no `NSApplication` and no display. It is the pixel companion to
+  `--dump-scene`'s structure, and both lay out on the same grid
+  (`SceneStates.referenceGrid`, computed from CoreText alone) so they cannot
+  drift. `--surface atlas` writes the glyph atlas itself, which is the first
+  thing to look at when the grid goes soft. It found a one-pixel seam through
+  the join code's digits on its first run — a defect no ASCII dump can show.
+- **`BEAM_PRESENT_STALL` reclassified 4 → 6.** The typing bench's "no presented
+  frames for 6 s" watchdog exited 4, the same code as "the results are bad or
+  unwritable". They are opposite kinds of failure: one is a re-runnable
+  environment abort, the other must never be retried into a pass.
+  `scripts/gate.sh` classifies on exactly this — 5/6 cool down and retry,
+  anything else fails immediately and stays failed.
+- **Cold-launch relaunch throttling (measured, not guessed).** `bench.sh` ran
+  five `--bench-launch` processes back to back; runs 1–3 landed and run 4 timed
+  out, *every time*. With a 1 s gap, six consecutive runs land. It is
+  WindowServer/activation throttling, not the display cycling and not the app —
+  and it had been quietly costing whole gate attempts. The settle pause costs
+  the measurement nothing: L1 is timed from process exec, so it starts after the
+  sleep ends. A screen-aborted run also leaves the compositor in a state where
+  the next one aborts too, which is why `gate.sh`'s cool-down is 45 s and not 5.
+
 ## Notes
 
 - Sabotage env vars are permanent fixtures, re-runnable any time a gate's

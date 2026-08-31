@@ -40,9 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 640),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         window.title = "Beam"
+        Self.styleAsContent(window)
         window.center()
         window.isReleasedWhenClosed = false
 
@@ -83,9 +84,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 window.setFrame(NSRect(x: x, y: f.minY + 40, width: w, height: min(600, f.height - 80)),
                                 display: true)
             }
-        case .normal, .flashOnKey, .verifySession, .dumpScene:
+        case .normal, .flashOnKey, .verifySession, .dumpScene, .screenshot:
             break  // both exit in main.swift before any window exists
         }
+    }
+
+    /// The window is nothing but content (PLAN.md §5.2). `fullSizeContentView`
+    /// plus a transparent, title-less titlebar means the Metal grid runs to all
+    /// four edges; the system's own corner radius and shadow come free and are
+    /// the only shape Beam has. There is no chrome left to design, which is the
+    /// point — what remains is the traffic lights, and they are handled rather
+    /// than left to fend for themselves on a dark ground:
+    ///
+    /// - `darkAqua` explicitly, so they render in their dark-mode variant
+    ///   (graphite when inactive, saturated on hover) instead of the light
+    ///   variant, which reads as three bright dots pasted onto the grid.
+    /// - The background is Beam's ground, so the rounded corners, a live
+    ///   resize, and the instant before the first frame are all the same
+    ///   colour rather than a flash of system gray.
+    /// - No titlebar separator hairline.
+    ///
+    /// The lights sit inside the left margin the roster already reserves, so
+    /// they cost the composition nothing — see Scene.topRow.
+    static func styleAsContent(_ window: NSWindow) {
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = NSColor(
+            srgbRed: CGFloat(Renderer.groundSRGB.x), green: CGFloat(Renderer.groundSRGB.y),
+            blue: CGFloat(Renderer.groundSRGB.z), alpha: 1)
+        window.titlebarSeparatorStyle = .none
+        // Dragging the window is GridView's job (`performDrag` on any press
+        // that is not a peer row), not AppKit's: the view consumes mouseDown to
+        // make the roster clickable, which would otherwise leave a chrome-less
+        // window with no way to move it.
+        window.isMovableByWindowBackground = false
     }
 
     /// Benches must measure an unoccluded window: WindowServer drops presents
@@ -179,7 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .probePresents:
             probe = PresentProbe(view: view, window: window)
             probe?.start()
-        case .normal, .flashOnKey, .verifySession, .dumpScene:
+        case .normal, .flashOnKey, .verifySession, .dumpScene, .screenshot:
             app.startDiscovery()
         }
     }

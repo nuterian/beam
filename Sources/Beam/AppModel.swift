@@ -9,9 +9,11 @@ struct Peer {
     let endpoint: NWEndpoint
     /// When it first appeared, for the fade-in.
     let appearedAt: Double
+    /// The palette slot this peer is actually shown in. Starts at the hash of
+    /// the name and moves only to break a tie — see `assignInks`.
+    var inkIndex: Int
 
     var display: String { Peer.display(of: name) }
-    var inkIndex: Int { Peer.ink(of: name) }
 
     /// The name a human reads. The advertised name carries a `-<pid>` suffix so
     /// two instances on one machine stay distinguishable to the protocol; the
@@ -29,6 +31,35 @@ struct Peer {
         var h: UInt64 = 0xcbf29ce484222325
         for b in name.utf8 { h = (h ^ UInt64(b)) &* 0x100000001b3 }
         return Int(h % UInt64(Renderer.Ink.peerCount))
+    }
+
+    /// The hash alone gives two of three peers the same colour often enough to
+    /// see it on the launch screen (six slots, birthday paradox — measured on
+    /// the very first roster screenshot of this session). The six peer hues are
+    /// designed as a *set*, so two rows sharing one is the design failing, not
+    /// a cosmetic near-miss.
+    ///
+    /// So: the hash is the preferred slot, and collisions probe forward to the
+    /// next free one. Sorting by name first makes the outcome depend only on
+    /// *which* peers are present, never on discovery order, so a roster does
+    /// not reshuffle its colours as it fills in. Past six peers slots have to
+    /// repeat, and they do, in a defined order rather than at random.
+    ///
+    /// Phase 4 (N-peer) needs colours that agree across machines; that is a
+    /// negotiation, and it is not this. In a 1:1 session each side colours only
+    /// the *other* peer, so nothing has to agree yet.
+    static func assignInks(_ peers: inout [Peer]) {
+        var taken = Set<Int>()
+        for i in peers.indices.sorted(by: { peers[$0].name < peers[$1].name }) {
+            var slot = Peer.ink(of: peers[i].name)
+            var probes = 0
+            while taken.contains(slot) && probes < Renderer.Ink.peerCount {
+                slot = (slot + 1) % Renderer.Ink.peerCount
+                probes += 1
+            }
+            taken.insert(slot)
+            peers[i].inkIndex = slot
+        }
     }
 }
 
@@ -119,6 +150,8 @@ final class AppModel {
         let d = DiscoveryService(ownName: localName)
         d.onPeersChanged = { [weak self] peers in
             guard let self else { return }
+            var peers = peers
+            Peer.assignInks(&peers)
             self.peers = peers
             if case .searching = self.presence, !peers.isEmpty { self.presence = .ok }
             self.onNeedsRender?()
@@ -325,8 +358,9 @@ final class AppModel {
         peers = names.map {
             Peer(name: $0,
                  endpoint: .service(name: $0, type: "_beam._tcp", domain: "local.", interface: nil),
-                 appearedAt: 1)
+                 appearedAt: 1, inkIndex: Peer.ink(of: $0))
         }
+        Peer.assignInks(&peers)
         presence = .ok
     }
 
@@ -346,12 +380,29 @@ final class AppModel {
                               name: Peer.display(of: peer), inkIndex: Peer.ink(of: peer), since: 1)
     }
 
+    /// A fade never starts from nothing. Two reasons, and the second is the
+    /// serious one (PLAN.md §5.2, motion):
+    ///
+    /// 1. Starting at zero makes arrival feel *slower* than it is — the first
+    ///    frame after a peer is discovered shows an empty row where the peer
+    ///    is. From 40% the row is legible on frame one and the fade reads as
+    ///    settling rather than as loading.
+    /// 2. **A fade must not be able to make a "visible" claim true before a
+    ///    human could read the thing.** `L1.launch_to_peers_visible_ms` is
+    ///    marked on the presented frame that first carries a peer row; with a
+    ///    fade from zero that frame is blank, and Beam would be quietly
+    ///    crediting itself with up to a fade's worth of latency it had not
+    ///    delivered. The floor is what makes the metric honest, which is why
+    ///    it is a constant here and not a taste knob.
+    static let fadeFloor = 0.40
+
     static func alpha(since: Double, now: Double) -> UInt8 {
         guard since > 0 else { return 255 }
         let t = (now - since) / fadeSeconds
         if t >= 1 { return 255 }
-        if t <= 0 { return 0 }
         // Ease-out: fast to mostly-there, so it reads as arrival, not as motion.
-        return UInt8(max(0, min(255, (1 - (1 - t) * (1 - t)) * 255)))
+        let eased = t <= 0 ? 0 : 1 - (1 - t) * (1 - t)
+        let a = fadeFloor + (1 - fadeFloor) * eased
+        return UInt8(max(0, min(255, a * 255)))
     }
 }

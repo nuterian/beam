@@ -15,6 +15,13 @@ echo "== L1: launch (5 cold runs, median) =="
 launch_vals=()
 typeable_vals=()
 for i in 1 2 3 4 5; do
+  # Settle between cold launches. Relaunching back-to-back, macOS stops putting
+  # the new window on the glass within the bench's 15 s timeout — measured
+  # 2026-08-30: runs 1-3 land, run 4 times out, every time; a 1 s gap makes six
+  # consecutive runs land. It is WindowServer/activation throttling, not the
+  # display cycling and not the app. The pause costs the measurement nothing:
+  # L1 is timed from process exec, so it starts after this sleep is over.
+  [ "$i" = 1 ] || sleep 1
   out=$("$BIN/beam" --bench-launch)
   l=$(echo "$out" | sed -n 's/launch_to_first_frame_ms=//p')
   t=$(echo "$out" | sed -n 's/launch_to_typeable_ms=//p')

@@ -232,6 +232,192 @@ be one; `yrs` lands in Phase 3 and inherits the L4 budgets and the L6 wire budge
 also keeps the doc channel and the (Phase-3) awareness channel separate at the op level so the UDP
 split in §4.8 stays available.
 
+## 5.2 Visual quality — design of record
+
+Beam works and its layout is sound; it does not yet *look* like a product. This section is the
+design of record for making it visually excellent at the level of Zed or Linear, under a hard
+constraint: **beauty here is precision, not decoration.** Beam stays one window, one Metal grid, one
+instanced draw call, every pixel from the glyph atlas, zero chrome. Nothing in this work may cost the
+keystroke hot path a microsecond, the frame a draw call, or the idle loop a wakeup — and because
+aesthetics are not gateable but regressions are, **every workstream lands only with `scripts/bench.sh`
+fully green**: draw calls/frame, malloc/keystroke, idle CPU (foreground and connected), L1 launch, and
+every L2 row unchanged or better. Where a change is measurable it is budgeted in `budgets.json`
+first and proven red before it is trusted (§3). No budget moves after seeing the data.
+
+**No golden-image tests.** Pixel-diffing a renderer is brittle and would make every deliberate
+improvement a test failure. Structure is checked by `--dump-scene` (diffable, in CI); pixels are
+reviewed by eye through `--screenshot`. The two are kept in sync by rule: a layout change updates both.
+
+### The eyes: `beam --screenshot`
+
+`beam --screenshot [--surface roster|denied|pairing|editor|all] [--out dir]` renders each surface into
+an **offscreen** Metal texture at 2× and writes PNGs. No window, no display, no `NSApplication` — so
+unlike every photon bench it is immune to this machine's display cycling (§ environment quirks) and
+it runs in CI. It reuses `SceneDump`'s seeded `AppModel`s, so the ASCII dump and the PNGs show the
+same states and cannot drift apart. This is built first because visual iteration without it is
+guesswork: screenshot → look → adjust → screenshot. A "before" set is captured on the pre-session
+code and kept; every workstream below reports a before/after pair.
+
+### The workstreams
+
+1. **Typography — the single biggest visible lever.** The atlas rasterizes with
+   `setShouldSmoothFonts(false)` and the shader blends in non-linear sRGB; light-on-dark text blended
+   without gamma awareness reads wrong (thin, or muddy at the edges) — this is the thing every serious
+   text renderer handles deliberately. Also: cell metrics must land on whole device pixels end to end
+   (`contentsScale` → `drawableSize` → cell width/height); any fractional accumulation blurs a grid
+   that is otherwise pixel-exact. Descenders must not be clipped by the cell. SF Mono is evaluated
+   against the current `userFixedPitch` face, and stroke weight is judged *on the dark ground*, not in
+   the abstract. Atlas and font work bills to the **L1 launch budget**, which is gated: a heavier
+   atlas earns its cost or gets precompiled.
+2. **The window is all content.** `fullSizeContentView` + transparent titlebar +
+   `isMovableByWindowBackground`; traffic lights overlay the already-generous left margin with
+   designed hover/inactive states rather than AppKit defaults floating on the grid. Corner radius
+   comes free from the system. Gated by: L1 launch and typeable still hold, and the bench windows
+   still float and order correctly (the two-process join bench depends on that plumbing).
+3. **A designed palette.** Today's entries are programmer-picked RGB in the shader source. They get
+   replaced by a designed scale: a background carrying a trace of hue rather than neutral gray;
+   fg/dim/faint as measured contrast steps; the six peer hues equalized for *perceived* lightness on
+   the dark ground so they read as a set; accent reserved for "beam" and the join code alone. The
+   palette lives in `Renderer.shaderSource` and each entry is annotated with its intent — that file
+   *is* Beam's design system. Palette and workstream 1 interact (gamma/linear space is one decision
+   across both) and are decided together.
+4. **Composition.** Roster, join code and editor as designed layouts: one alignment grid, breathing
+   room used with intent, and the six digits set as the typographic centerpiece of the product — that
+   screen is the one users show each other across a desk. The HUD line is designed, not appended: it
+   is the only ornament Beam has, and the latency numbers *are* the brand, so they are set like
+   jewelry, not like debug output. Every layout change gets a `--dump-scene` review and a screenshot
+   review.
+5. **Motion, only where it is free.** The fade machinery already exists (per-instance alpha in the
+   existing `color` word; finite by rule). It is used where arrival deserves softness. Nothing
+   infinite, nothing that blinks, and **no easing on the caret** — instant is the aesthetic, and a
+   sliding cursor manufactures perceived latency in the one product that exists to delete it. Anything
+   repainting on a recurring signal pins the display link awake; that exact mistake cost 3.4% idle CPU
+   in Phase 2 and was caught by the gate (`perf/harness-proof.md`), which is why this workstream is
+   last and smallest.
+
+### What the eyes found, and what changed (2026-08-30)
+
+`--screenshot` earned itself on its first run, the way `--dump-scene` did in Phase 2: the
+"before" set of the shipping code showed a **one-pixel dark seam cutting horizontally through
+every digit of the join code** — the most-looked-at pixels in the product, and invisible in the
+ASCII dump because the dump has no pixels. The cause was `originPx.y = cellHeightPx / 2` with an
+odd cell height: a half-pixel grid origin makes every quad sample across its atlas cell's edge,
+and for the solid-block glyph the neighbouring cell is empty. Whole-pixel metrics end to end fixed
+it. That is the argument for this tool in one bug: structure is diffable, pixels are not, and Beam
+needed both.
+
+**Typography.** The face is now **SF Mono** (`.AppleSystemUIFontMonospaced-Regular`), reached
+through `NSFont.monospacedSystemFont` — the only way to get it. `CTFontCreateWithName("SF Mono")`
+silently returns **Helvetica**, a proportional font, with no error; a monospace grid rendered in
+Helvetica is the kind of thing that ships. `userFixedPitch` (Menlo) remains the documented
+fallback. Cell metrics are whole device pixels throughout — cell 18x36, baseline 29, grid origin
+(18, 18) at 2x — and the line height is a designed 1.30 em rather than whatever
+`ascent + descent + leading` happened to sum to. The cell is then checked against the *real ink
+extents* rather than the font's own metrics, because they disagree: SF Mono's deepest descender
+('|', 6.60 px at 28 px) falls outside its declared 5.91 px descent, so a cell sized from the
+metrics alone clips it. `--screenshot --surface atlas` writes the atlas itself; a scan of it
+confirms every glyph clears its cell.
+
+**Gamma.** The render target is now `bgra8Unorm_srgb` with an explicitly sRGB layer colourspace,
+and the palette is linearised per vertex, so the blend happens in **linear light**. This is not a
+subtle change: an edge pixel at half coverage was being composited as sRGB 119 and is now 160 —
+**34% brighter** — which is why light-on-dark text blended in non-linear sRGB reads thin and
+slightly grubby. Fully-covered and zero-coverage pixels are unchanged to within rounding (verified
+against the design values in the PNGs), which is the proof the transform is right: only the
+antialiased edges moved, which is exactly what gamma-correct blending is.
+
+**Palette.** Designed in OKLCH and converted, so the numbers in `Renderer.shaderSource` are the
+*result* of a decision. Ground **#0D1117** (L 0.175 / C 0.014 / H 258) — not neutral; the same
+blue the text hierarchy is built from. fg / dim / faint are one hue at deliberate lightness steps
+(0.930 / 0.700 / 0.505 → 15.4:1 / 7.1:1 / 3.2:1 against the ground). The six peer colours share an
+**identical L (0.760) and C (0.120)** and differ only in hue, 60° apart, which is the whole trick:
+at equal perceived lightness they read as one set and no peer is louder than another. Their ring
+is offset 30° from the accent's hue — the furthest six evenly spaced hues can stay from it — and
+the accent (#23C9FB) is reserved for the "beam" mark and the join code, nothing else.
+
+The first roster screenshot then showed a **different** bug the palette had been hiding: two of
+three peers were the same colour. The hash-to-six-slots assignment collides at the rate the
+birthday paradox says it will, and six hues designed as a set is the design failing when two rows
+share one. `Peer.assignInks` keeps the hash as the preferred slot and probes forward on a
+collision, over a name-sorted list so the outcome depends only on which peers are present and a
+roster never reshuffles as it fills.
+
+**Composition.** One alignment grid, obeyed by all three surfaces: left margin 6 cells (63 pt at
+2x — exactly past the traffic lights' right edge, so the chrome sits in a margin the design
+already reserved), first content row 3 (rows 0–2 are the band the lights occupy). Two spacing
+rules do most of the work: list items get air (peers every *other* row, with the blank row as the
+second half of the click target), paragraph lines do not (an empty or denied state is one
+sentence and stays adjacent). Each page is anchored at both ends — a block at the top, one quiet
+line along the bottom.
+
+The join code is now the largest thing in the product by a wide margin: block "pixels" are square
+by construction (cells are 1:2, so a pixel is 2s cells by s rows), the code is scaled to the
+largest whole step the window allows, and it is **grouped 3+3**. That grouping is a correctness
+feature rather than styling — the entire security model is a human comparing six digits with
+another human, and people compare 3+3 far more reliably than a run of six.
+
+The HUD is set like a caption on an instrument instead of like debug output: labels faint, values
+carrying the budget colour, units quiet again, the peer's chip inline in their own colour. The
+latency numbers are the brand, so they are the brightest thing on the line and everything around
+them gets out of their way.
+
+**The window** is `fullSizeContentView` with a transparent, title-less titlebar; corner radius and
+shadow come free from the system, the appearance is pinned to `darkAqua` so the traffic lights use
+their dark variant instead of sitting on the grid as three bright dots, and the window background
+is Beam's own ground so a live resize and the instant before the first frame are the same colour.
+Because the grid consumes `mouseDown` to make the roster clickable, `isMovableByWindowBackground`
+would never fire — so **the grid is the drag handle**: any press that is not a peer row calls
+`performDrag`, and a press without movement still does nothing.
+
+**Motion: one change, and a list of deliberate refusals.** Fades now start from a **40% floor**
+rather than from nothing, and the second reason is the serious one. `L1.launch_to_peers_visible_ms`
+is marked on the presented frame that first carries a peer row — and with a fade from zero that
+frame is *blank*. Beam was quietly crediting itself with up to a fade's worth of latency it had
+not delivered. A fade must not be able to make a "visible" claim true before a human could read the
+thing. It also simply feels faster: the row is legible on frame one and the fade reads as settling
+rather than as loading.
+
+Nothing else was added, and the refusals are the design:
+- **The join code does not fade in.** It is measured (`join_gesture_to_code_visible_ms`) and, more
+  importantly, the guest is held out of the editor until the code has actually been *presented* on
+  its own screen. A fade would make both claims softer in exchange for prettiness on the one screen
+  where the product is making a security promise. The code lands.
+- **The caret has no easing, and does not blink.** A sliding cursor manufactures perceived latency
+  in the one product that exists to delete it, and a blink is an infinite animation that would pin
+  the display link awake and put a permanent floor under idle CPU.
+- **The launch screen does not fade in.** Fading the first frame would make the app feel slower
+  than the 148 ms it measures.
+
+**Validated 2026-08-30 — gate 30 pass / 0 fail**, the same count Phase 2 exited on, with every L2
+row unchanged or better and nothing given up for the visual work. Presented p50 **25.82** / p99
+**33.74**, pipeline depth **17.05**, jitter **7.92** (from 8.1), commit p50 **0.336** (from 0.72),
+burst p99 49.08, first-keystroke-after-idle **45.8 p50 / 54.5 max** (from 51.3), draw calls **1**,
+malloc/keystroke **−25 B**. Idle CPU **0.012%** foreground alone (from 0.026) and **0.206%**
+connected (from 0.524 — comfortably back under its 0.5 design budget), RSS **65.5 MB**. Launch to
+first frame **181 ms**; the binary grew 526 → **551 KB** and still links **36** dylibs, so the
+screenshot path added no framework. On the join path: gesture → code on both screens **48.7 ms**
+(from 64.6), confirm → editing 66.2, gesture → first shared keystroke **182.1 ms** (from 214.6),
+crypto 0.162 ms, 30 bytes/keystroke.
+
+Two rows moved the wrong way and are reported rather than explained away.
+`L1.launch_to_peers_visible_ms` measured 736 ms against Phase 2's 531 (budget 1000, gate 2000);
+the same run's cold `browse_to_peer_found` was 1001 ms, so this is mDNS variance rather than
+anything in the render path — the mechanism that marks the row is unchanged, and the fade floor
+above changes only whether that instant is *truthful*, not when it occurs.
+`keystroke_to_remote_present_loopback_p99_ms` measured 43.2 against a 36 ms budget (gate 45),
+inside the 32.9–44.9 range §5.1 already records for it and still floored by the local present path.
+
+**One thing was measured, believed, and then un-believed.** A mid-session run read
+`malloc_bytes_per_keystroke` at +8.6 against a design target of zero, so the HUD's per-frame span
+array was given a reused buffer. The next run read +29; the run after read −25; the recorded history
+is −81, −1.4, +8.6, +29, −25. A ~110-byte spread cannot resolve the ~10 bytes eleven spans cost, so
+the "regression" was noise and the fix was an **unmeasured optimisation** — which this project does
+not merge, for the same reason `DiscoveryService.pauseBrowsing()` is still sitting unwired (§5.1).
+It was reverted, and the reason is now a comment on `hudSpans()` so the next person does not
+re-discover it. A separate run during that stretch went red (presented p99 41.6, jitter 15.8) on a
+machine that had just failed five bench attempts in a row; a clean re-run measured 33.7 / 7.9, which
+is what "never gate on garbage" means in practice.
+
 ## 6. Phases (each ships its benchmarks first; no merge red)
 
 **Phase 0 — Skeleton + harness.** Nothing else starts until green.

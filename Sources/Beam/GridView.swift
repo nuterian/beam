@@ -102,7 +102,12 @@ final class GridView: NSView {
     override func makeBackingLayer() -> CALayer {
         let l = CAMetalLayer()
         l.device = renderer.device
-        l.pixelFormat = .bgra8Unorm
+        // sRGB-encoded target + an explicitly sRGB layer colourspace: the blend
+        // happens in linear light and the compositor is told exactly what the
+        // bytes mean, so what a screenshot shows is what the glass shows
+        // (PLAN.md §5.2).
+        l.pixelFormat = Renderer.pixelFormat
+        l.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         l.framebufferOnly = true
         l.maximumDrawableCount = 2  // one frame of buffering less; PLAN.md §2
         l.isOpaque = true
@@ -144,7 +149,11 @@ final class GridView: NSView {
     private func updateDrawableSize() {
         let scale = window?.backingScaleFactor ?? 2
         metalLayer.contentsScale = scale
-        let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        // Rounded to whole device pixels. A fractional drawable puts the whole
+        // grid on a half-pixel offset, which on a glyph atlas is not a subtle
+        // difference: every cell then samples across its atlas neighbour's edge.
+        let size = CGSize(width: (bounds.width * scale).rounded(),
+                          height: (bounds.height * scale).rounded())
         if size.width > 0 && size.height > 0 { metalLayer.drawableSize = size }
     }
 
@@ -154,10 +163,10 @@ final class GridView: NSView {
     }
 
     private var visibleCols: Int {
-        max(1, Int(metalLayer.drawableSize.width) / renderer.atlas.cellWidthPx - 2)
+        renderer.atlas.metrics.cols(forWidthPx: Int(metalLayer.drawableSize.width))
     }
     private var visibleRows: Int {
-        max(1, Int(metalLayer.drawableSize.height) / renderer.atlas.cellHeightPx - 1)
+        renderer.atlas.metrics.rows(forHeightPx: Int(metalLayer.drawableSize.height))
     }
 
     // MARK: - Input
@@ -219,15 +228,22 @@ final class GridView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard app.surface == .roster else { return }
         // The roster's rows are grid rows; the hit test is arithmetic, which is
         // what having no views buys.
-        let p = convert(event.locationInWindow, from: nil)
-        let scale = window?.backingScaleFactor ?? 2
-        let cellH = CGFloat(renderer.atlas.cellHeightPx) / scale
-        // Flip to top-down grid rows; originPx offsets by half a cell.
-        let row = Int((bounds.height - p.y - cellH / 2) / cellH)
-        app.join(peerIndex: row - Scene.firstPeerRow)
+        if app.surface == .roster {
+            let p = convert(event.locationInWindow, from: nil)
+            let scale = window?.backingScaleFactor ?? 2
+            let cellH = CGFloat(renderer.atlas.cellHeightPx) / scale
+            // Flip to top-down grid rows; originPx offsets by the grid origin.
+            let originRows = CGFloat(renderer.atlas.cellHeightPx / 2) / scale
+            let row = Int((bounds.height - p.y - originRows) / cellH)
+            if app.join(peerIndex: Scene.peerIndex(atRow: row)) { return }
+        }
+        // Beam has no title bar, so the grid *is* the drag handle. Anything
+        // that is not a peer row moves the window — a press without movement
+        // still does nothing, so this costs the roster's click nothing.
+        // (Phase 1's mouse text selection takes this over inside the editor.)
+        window?.performDrag(with: event)
     }
 
     /// One input, local or remote, entering the hybrid loop.
@@ -441,25 +457,49 @@ final class GridView: NSView {
         let cols = visibleCols, rows = visibleRows
         switch app.surface {
         case .roster:
-            Scene.roster(app, into: &w, now: now, cols: cols)
+            Scene.roster(app, into: &w, now: now, cols: cols, rows: rows)
         case .pairing:
-            Scene.pairing(app, sas: app.session?.sas ?? "", into: &w, now: now)
+            Scene.pairing(app, sas: app.session?.sas ?? "", into: &w, now: now, cols: cols, rows: rows)
         case .editor:
             Scene.editor(app, into: &w, now: now, cols: cols, rows: rows)
-            let (text, ink) = hudLine()
-            Scene.hud(into: &w, text: text, ink: ink, cols: cols, rows: rows)
+            Scene.hud(into: &w, spans: hudSpans(), cols: cols, rows: rows)
         }
         return w.count
     }
 
     /// Live latency against the same budgets.json CI reads, plus the peer's
     /// live RTT — red the moment a live number exceeds budget (PLAN.md §3.1).
-    private func hudLine() -> (String, Renderer.Ink) {
-        guard let stats = recorder.hudPresentedStats() else { return ("", .dim) }
-        var text = String(format: "p50 %.1f  p99 %.1f ms", stats.p50, stats.p99)
+    ///
+    /// Set as spans rather than one string: the labels are faint, the values
+    /// carry the colour, the units are quiet again. These numbers are the
+    /// product, so they are the brightest thing on the line and everything
+    /// around them gets out of their way.
+    /// Built fresh each frame, and left that way on purpose. This is the
+    /// keystroke hot path, so a reused buffer looks like the obvious win — but
+    /// `malloc_bytes_per_keystroke` has measured −81, −1.4, +8.6 and +29 across
+    /// runs of the same code. A ~110-byte spread cannot resolve the ~10 bytes
+    /// an array of eleven spans costs, so keeping the capacity is an
+    /// *unmeasured* optimisation, and this project does not merge those
+    /// (PLAN.md §5.1, on the browser-pause lever left unwired for the same
+    /// reason). It stays simple until a bench can tell the difference.
+    private func hudSpans() -> [Scene.Span] {
+        guard let stats = recorder.hudPresentedStats() else { return [] }
+        let ink: Renderer.Ink = stats.p99 <= hudP99BudgetMs ? .green : .red
+        var spans = [
+            Scene.Span("p50 ", .faint),
+            Scene.Span(String(format: "%.1f", stats.p50), ink),
+            Scene.Span("  p99 ", .faint),
+            Scene.Span(String(format: "%.1f", stats.p99), ink),
+            Scene.Span(" ms", .faint),
+        ]
         if let r = app.remote, !app.rttText.isEmpty {
-            text += "   \(r.name) \(app.rttText)"
+            spans.append(Scene.Span("   ", .faint))
+            spans.append(Scene.Span(glyph: GlyphAtlas.chipGlyphIndex, .peer(r.inkIndex)))
+            spans.append(Scene.Span(" ", .faint))
+            spans.append(Scene.Span(r.name, .dim))
+            spans.append(Scene.Span(" \(app.rttText.replacingOccurrences(of: " ms", with: ""))", .fg))
+            spans.append(Scene.Span(" ms", .faint))
         }
-        return (text, stats.p99 <= hudP99BudgetMs ? .green : .red)
+        return spans
     }
 }

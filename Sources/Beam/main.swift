@@ -4,12 +4,14 @@ import AppKit
 // Modes: (none) normal · --bench-typing [--n N] [--out path] · --bench-launch
 //        · --bench-idle · --bench-join --role host|guest · --probe-presents
 //        · --verify-launch · --flash-on-key (camera calibration)
+//        · --dump-scene (ASCII) · --screenshot [--surface k] [--out dir] (PNG)
 
 let config = AppConfig.parse(CommandLine.arguments)
 
 // Headless, screen-independent, and exits before any window exists.
 if case .verifySession(let out) = config.mode { SessionVerify.run(outPath: out) }
 if case .dumpScene = config.mode { SceneDump.run() }
+if case .screenshot(let surface, let out) = config.mode { Screenshot.run(surface: surface, outDir: out) }
 
 let app = NSApplication.shared
 let delegate = AppDelegate(config: config)
