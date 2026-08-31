@@ -36,6 +36,8 @@ jobs:
         # and the deterministic bytes/keystroke wire counter.
         run: .build/release/beam --verify-session --out perf/results/l6-session.json
       - name: Package + verify launch
+        env:
+          BEAM_ALLOW_HEADLESS: "1"
         run: |
           scripts/package_app.sh
           scripts/verify_app.sh

@@ -176,6 +176,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             guard let self, !self.firstFrameSeen else { return }
             let vis = self.window.occlusionState.contains(.visible)
+            // **A machine with no display cannot be asked for a photon.**
+            //
+            // `--verify-launch` answers two different questions and only one of
+            // them needs a screen: *did the packaged binary boot* — Metal
+            // device, runtime-compiled shaders, atlas, window, first responder,
+            // which is the never-again gate from PLAN.md §3.2 — and *did a
+            // frame reach the glass*. On a CI runner the second is impossible
+            // and its failure says nothing about the build.
+            //
+            // So `BEAM_ALLOW_HEADLESS=1` (set only in CI) makes the timeout a
+            // pass that reports what it did NOT verify. It is opt-in for a
+            // reason that is not caution: `scripts/gate.sh` uses this same mode
+            // as its screensaver pre-flight, and a default that shrugged at a
+            // missing frame would turn that pre-flight into a no-op and let
+            // every timed bench run into a dead screen.
+            if case .verifyLaunch = self.config.mode,
+               ProcessInfo.processInfo.environment["BEAM_ALLOW_HEADLESS"] == "1" {
+                FileHandle.standardError.write(
+                    "BEAM_LAUNCH_OK\nBEAM_LAUNCH_HEADLESS: the binary booted — Metal device, shaders, atlas, window, first responder — but no frame reached the display in 15 s and this machine has \(NSScreen.screens.count) screen(s). The BOOT path is verified; the PRESENT path is not, and cannot be here.\n"
+                        .data(using: .utf8)!)
+                exit(0)
+            }
             FileHandle.standardError.write(
                 "BEAM_LAUNCH_TIMEOUT: no frame reached the display in 15 s (window visible=\(vis)). An occluded screen (screensaver?) drops all presents — benches need a visible screen.\n"
                     .data(using: .utf8)!)

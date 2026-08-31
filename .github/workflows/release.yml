@@ -37,6 +37,11 @@ jobs:
         # weeks. This executes the packaged binary DIRECTLY (a GUI launch
         # swallows stderr) and requires the BEAM_LAUNCH_OK sentinel. A release
         # that cannot start is worse than no release.
+        env:
+          # No display on a shared runner, so no frame can ever be presented.
+          # This verifies the BOOT path — the never-again gate — and says on
+          # stderr that it could not verify the present path.
+          BEAM_ALLOW_HEADLESS: "1"
         run: scripts/verify_app.sh
 
       - name: Headless correctness + the perf gate over committed results
