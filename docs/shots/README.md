@@ -19,6 +19,11 @@ will be regenerated:
 - `before-editor/` — before §5.3. This is the "it looks excellent and it is
   unmistakably a TUI" set: a peer list as the launch screen, a fixed 200x120
   ASCII cell array with no file, no gutter, no selection and no scrolling.
+- `before-58/` — before §5.8. The set from just before find, the data-loss
+  guards and the longer sample document: the seeded file was 19 lines in a
+  33-row viewport, so two thirds of every review surface was empty ground and
+  no screenshot ever showed a full screen of code, a scroll indicator, or a
+  status line with a selection count on it.
 - `before-density/` — before §5.7. The set that was put beside VS Code and read
   as a very clean *prototype*: 28 device pixels of unchosen ground above the tab
   strip and none below it, a four-cell rail carrying two 18 pt outline icons

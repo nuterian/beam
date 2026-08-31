@@ -11,6 +11,7 @@ APP=dist/Beam.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/bin/beam "$APP/Contents/MacOS/Beam"
+cp resources/Beam.icns "$APP/Contents/Resources/Beam.icns"
 
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -20,6 +21,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleExecutable</key><string>Beam</string>
     <key>CFBundleIdentifier</key><string>com.jugalm.beam</string>
     <key>CFBundleName</key><string>Beam</string>
+    <key>CFBundleIconFile</key><string>Beam</string>
     <key>CFBundleDisplayName</key><string>Beam</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.0.1</string>
@@ -41,6 +43,21 @@ if [ -n "${BEAM_NOTARIZE_PROFILE:-}" ]; then
   ditto -c -k --keepParent "$APP" dist/Beam.zip
   xcrun notarytool submit dist/Beam.zip --keychain-profile "$BEAM_NOTARIZE_PROFILE" --wait
   xcrun stapler staple "$APP"
+fi
+
+# **A .dmg, because it is the format a Mac user already knows how to install.**
+# Drag to Applications, eject, done — no Terminal, no `xattr`, no unarchiver
+# that leaves the app in ~/Downloads where the next update cannot find it.
+# `BEAM_DMG=0` skips it for the CI path that only wants to verify the binary.
+if [ "${BEAM_DMG:-1}" = 1 ] && command -v hdiutil >/dev/null; then
+  STAGE=dist/dmg
+  rm -rf "$STAGE" dist/Beam.dmg
+  mkdir -p "$STAGE"
+  cp -R "$APP" "$STAGE/Beam.app"
+  ln -s /Applications "$STAGE/Applications"
+  hdiutil create -volname "Beam" -srcfolder "$STAGE" -ov -format UDZO dist/Beam.dmg >/dev/null
+  rm -rf "$STAGE"
+  echo "packaged dist/Beam.dmg"
 fi
 
 echo "packaged $APP"

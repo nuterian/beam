@@ -1,0 +1,66 @@
+name: release
+# Builds Beam.app, wraps it in a disk image, and publishes it as a rolling
+# `latest` release so https://github.com/nuterian/beam/releases/latest/download/Beam.dmg
+# is always the newest build. A .dmg because it is the format a Mac user
+# already knows how to install: drag to Applications, eject, done.
+#
+# The build is AD-HOC SIGNED and NOT NOTARIZED — there is no Developer ID here —
+# so macOS will refuse the first double-click and the download page says so and
+# gives the right-click-Open instruction. Set BEAM_SIGN_IDENTITY and
+# BEAM_NOTARIZE_PROFILE (scaffolding already in scripts/package_app.sh) to fix
+# that properly once a certificate exists.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  dmg:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build, package, and make the disk image
+        run: |
+          scripts/package_app.sh
+          ls -la dist
+
+      - name: Verify the packaged binary actually launches
+        # PLAN.md §3.2: the predecessor shipped a silently-broken .app for
+        # weeks. This executes the packaged binary DIRECTLY (a GUI launch
+        # swallows stderr) and requires the BEAM_LAUNCH_OK sentinel. A release
+        # that cannot start is worse than no release.
+        run: scripts/verify_app.sh
+
+      - name: Headless correctness + the perf gate over committed results
+        # No display on a shared runner, so the timed benches cannot run here
+        # (PLAN.md §3.3, tier 1). These two can, and neither is allowed to
+        # publish a broken build.
+        run: |
+          .build/bin/beam --bench-text --out perf/results/l2-text.json
+          .build/bin/beam --verify-session --out perf/results/l6-session.json
+          .build/bin/perf-gate
+
+      - name: Publish the rolling `latest` release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse --short HEAD)
+          # Delete and recreate, so `latest` really is the newest build and the
+          # download URL never points at a stale asset.
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest dist/Beam.dmg \
+            --title "Beam (latest build)" \
+            --notes "Built from \`${SHA}\` on $(date -u +'%Y-%m-%d'). Apple silicon, macOS 14+.
+
+**This build is ad-hoc signed and not notarized.** macOS will refuse the first double-click: right-click (or Control-click) Beam in Applications and choose **Open**, then confirm. You only have to do it once.
+
+See [what Beam is not, yet](https://nuterian.github.io/beam/#honest) before trusting it with anything — in particular, collaborative editing is an early shared-grid model and not yet a CRDT."

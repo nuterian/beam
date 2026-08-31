@@ -64,6 +64,13 @@ enum SceneStates {
         return spans
     }
 
+    /// The seeded document. **Deliberately longer than the viewport**, so
+    /// every screenshot shows a full screen of code with the scroll indicator
+    /// on it rather than a third of a screen over empty ground — a review
+    /// surface that is mostly nothing hides exactly the density and typography
+    /// questions §5.2 built these tools to answer. Real code, with descenders,
+    /// punctuation, mixed case, a tab, a multi-byte character and a block
+    /// comment whose carry state the lexer has to get right.
     private static let doc = """
     use std::sync::Arc;
 
@@ -82,6 +89,36 @@ enum SceneStates {
             /* the caret's line is lit, and this
                block comment carries its state across */
             Ok(())
+        }
+
+        /// A glyph the atlas does not have is rasterized on demand and
+        /// evicted at the end of the frame that stopped needing it.
+        fn glyph_or_miss(&mut self, c: char) -> Slot {
+            match self.atlas.slot(c) {
+                Some(slot) => slot,
+                None => self.cache.rasterize(c, self.cell),
+            }
+        }
+
+        pub fn present(&mut self, layer: &Layer) -> Result<()> {
+            let drawable = layer.next_drawable()?;   // may be None while occluded
+            let pass = self.encoder(&drawable, 2);   // two planes: document, chrome
+            pass.set_scissor(self.viewport);
+            pass.draw_instanced(0..self.instances.len(), 1);
+            pass.end();
+            self.commit(drawable, |presented_at| {
+                self.recorder.presented(presented_at);   // NEVER a mean — p50/p99
+            })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn accented_scalars_advance_one_cell() {
+            assert_eq!(columns("café — naïve"), 12);
         }
     }
     """
