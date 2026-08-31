@@ -29,6 +29,8 @@ the product; every change ships behind a benchmark and a CI gate.
 
 ```bash
 scripts/build.sh        # release build -> .build/bin (SwiftPM, or direct swiftc fallback)
+scripts/check.sh        # the FAST loop for UX work: build + correctness + dump + screenshots,
+                        #   under a minute, no display needed. Not the gate.
 scripts/bench.sh        # every bench + the gate, one command
 scripts/gate.sh         # bench.sh, retried past screen-aborted runs (exit 5/6 only)
 .build/bin/perf-gate    # judge perf/results/*.json against perf/budgets.json

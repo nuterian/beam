@@ -19,6 +19,11 @@ enum SceneStates {
         let title: String
         /// Writes the frame and returns its planes, exactly as the window does.
         let build: (inout InstanceWriter, Double, Int, Int, Int, Int) -> [Renderer.Plane]
+        /// Animation phases to render this state at. A screenshot is normally
+        /// the *settled* frame — every phase at rest — but a hover state has
+        /// nothing to look at when it is at rest, so a state may pin the slots
+        /// it is about (PLAN.md §5.6).
+        var phases: [Renderer.Ink: Float] = [:]
     }
 
     /// The grid the shipping window produces: AppDelegate's 980x640 content at
@@ -109,6 +114,12 @@ enum SceneStates {
         denied.debugSetPresence(.localNetworkDenied)
         denied.debugSetOverlay(.peers, query: "", files: [], selection: 0)
 
+        let hoverTab = seeded(peers: ["marlowe-air-1180", "atlas-mini-9042"])
+        hoverTab.hover = .tab(2)
+
+        let hoverRail = seeded(peers: ["marlowe-air-1180", "atlas-mini-9042"])
+        hoverRail.hover = .rail(0)
+
         let palette = seeded(peers: ["marlowe-air-1180"])
         palette.debugSetOverlay(.commands, query: "", files: [], selection: 0)
 
@@ -116,8 +127,9 @@ enum SceneStates {
         pairing.debugSetPairing(host: true)
 
         func state(_ key: String, _ title: String, _ app: AppModel,
-                   _ hud: [Scene.Span] = hudSample()) -> State {
-            State(key: key, title: title) { w, now, cols, rows, widthPx, heightPx in
+                   _ hud: [Scene.Span] = hudSample(),
+                   phases: [Renderer.Ink: Float] = [:]) -> State {
+            State(key: key, title: title, build: { w, now, cols, rows, widthPx, heightPx in
                 let m = GlyphAtlas.Metrics(pointSize: 14, scale: 2)
                 app.cellWidthPx = m.cellWidthPx
                 app.cellHeightPx = m.cellHeightPx
@@ -125,7 +137,7 @@ enum SceneStates {
                 app.originYPx = m.originY(forHeightPx: heightPx)
                 return Scene.frame(app, into: &w, now: now, cols: cols, rows: rows,
                                    widthPx: widthPx, hud: hud)
-            }
+            }, phases: phases)
         }
 
         return [
@@ -134,6 +146,10 @@ enum SceneStates {
             state("editor-alone", "editor — a file open with nobody nearby: the status line carries only the instrument", alone),
             state("editor-shared", "editor — in a session: their caret in their colour, their name trailing it, their RTT on the line",
                   shared, hudSample(peer: "marlowe-air", ink: Peer.ink(of: "marlowe-air-1180"))),
+            state("hover-tab", "hover — the pointer over an inactive tab: the tile fades in AND the label warms up",
+                  hoverTab, hudSample(), phases: [.hover: 1, .hoverText: 1]),
+            state("hover-rail", "hover — the pointer over a rail icon: the same two things, on a square tile",
+                  hoverRail, hudSample(), phases: [.hover: 1, .hoverText: 1]),
             state("palette", "⇧⌘P — every command Beam has, from the same table the menu bar is built from", palette),
             state("open", "⌘O — the open overlay over a scrimmed document: selection on the first row, hover on none", opening),
             state("peers", "⌘K — the same overlay listing peers; a number joins, which is §5.1's gesture one layer in", nearby),

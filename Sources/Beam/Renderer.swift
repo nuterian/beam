@@ -61,6 +61,14 @@ final class Renderer {
         /// the model, the scene or the instance buffer knows about
         /// (PLAN.md §5.5).
         case caret = 18
+        /// Content brightened under the pointer. It exists as its OWN slot,
+        /// rather than as a different ink chosen at draw time, so that it can
+        /// be *animated*: the label or icon is drawn twice — once at rest, once
+        /// in this — and the animation phase cross-fades the bright copy in
+        /// over the resting one. A hover that only fills a rectangle is a
+        /// rectangle appearing; a hover where the content itself brightens is
+        /// what reads as modern.
+        case hoverText = 19
 
         // --- Syntax (PLAN.md §5.3). Deliberately a DIFFERENT band from the
         // peer hues: peers sit at L 0.760 / C 0.120, tokens at L 0.78...0.83
@@ -151,10 +159,6 @@ final class Renderer {
         var cellPx: SIMD2<Float>
         var atlasCells: SIMD2<Float>
         var originPx: SIMD2<Float>
-        /// Seconds into the caret's blink, or **negative for "rest solid"**.
-        /// One float, and the shader does the rest.
-        var caretTime: Float
-        var pad: Float = 0
     }
 
     /// Where the caret's blink is evaluated: the CPU passes elapsed time and
@@ -317,6 +321,7 @@ final class Renderer {
         (.activeLine,SIMD3(0.093, 0.110, 0.135), "#181C22  L0.225 C0.014 H258  fg on it 13.9:1 — the caret's row: barely there, and that is the point"),
         (.hover,     SIMD3(0.180, 0.201, 0.232), "#2E333B  L0.320 C0.016 H258  fg on it 10.3:1 — the pointer is over this row. Hover is always drawn ON surface, never on the ground, so it has to clear surface, and it has to stay clearly under selection: the old pair sat 0.04 apart in L and read as the same weight in two tints"),
         (.edge,      SIMD3(0.225, 0.241, 0.265), "#393D44  L0.360 C0.012 H258   1.9:1 vs the ground, 1.35:1 on surface — hairlines and the scroll indicator: structure, not ink, so the number that matters is contrast against what it DIVIDES, not fg on it. One device pixel has to work harder than a fill to be seen at all, which is why edge sits above every surface it separates"),
+        (.hoverText, SIMD3(0.890, 0.911, 0.941), "#E3E8F0  L0.930 C0.012 H258  15.4:1 — fg's value in an animatable slot: what a tab label or a rail icon becomes under the pointer"),
         (.caret,     SIMD3(0.765, 0.965, 1.000), "#C3F6FF  L0.940 C0.053 H210  16.2:1 — your caret. The old #B1F3FF was **out of gamut**: its declared L0.930 C0.075 H225 clipped the blue channel and actually rendered as L0.925 C0.067 H210, so the table documented a colour the GPU never drew, and at 15.5:1 against fg's 15.4:1 it was not in any measurable sense brighter than body text. This is the largest chroma reachable at L0.940 on H210 — the hue the old one really landed on — which keeps the caret findable by HUE (on a screen of near-white text a near-white caret is findable only by shape, which was tried and looked worse) while making it, for the first time, genuinely the brightest value in the frame. Shape, width, hard edges and the absence of position easing are untouched: those were already right"),
 
         // Syntax. One band, low chroma, plain `fg` still the majority colour on
@@ -361,28 +366,7 @@ final class Renderer {
         float2 cellPx;
         float2 atlasCells;
         float2 originPx;
-        float caretTime;
-        float pad;
     };
-
-    // The caret's blink, evaluated on the GPU from one float.
-    //
-    // A cosine shaped by `caretGain` and clamped: it dwells fully on, dwells
-    // nearly off, and moves between the two over 64 ms — a hard square wave
-    // flickers and a plain sine never looks settled. The gain is a named
-    // constant rather than a literal here because `GridView` re-derives this
-    // same curve to decide when it may sleep, and the two had drifted to
-    // different gains; see `Renderer.caretGain`. It never
-    // reaches zero (floor 0.12) for the same reason a fade never starts at zero
-    // (PLAN.md §5.2): the caret is the pixel you are hunting for, and a caret
-    // that is genuinely invisible for half a second is a caret you lose.
-    // A negative time means "rest solid" — the blink is finite by rule.
-    inline float caretAlpha(float t) {
-        if (t < 0.0) return 1.0;
-        float c = cos(t * 6.28318530718 / \(caretPeriod));
-        float s = clamp(c * \(caretGain) * 0.5 + 0.5, 0.0, 1.0);
-        return mix(\(caretFloor), 1.0, s);
-    }
     struct Inst { ushort col; ushort row; ushort glyph; ushort color; };
     struct VSOut { float4 pos [[position]]; float2 uv; float3 rgb [[flat]]; float alpha [[flat]]; };
 
@@ -398,7 +382,8 @@ final class Renderer {
 
     vertex VSOut grid_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
                          const device Inst* inst [[buffer(0)]],
-                         constant Uniforms& u [[buffer(1)]]) {
+                         constant Uniforms& u [[buffer(1)]],
+                         constant float* phase [[buffer(2)]]) {
         Inst g = inst[iid];
         float2 corner = float2(vid & 1u, vid >> 1u);
         float2 px = u.originPx + (float2(g.col, g.row) + corner) * u.cellPx;
@@ -410,9 +395,14 @@ final class Renderer {
         // The ink field is a byte; the table is paletteSlots entries and this
         // masks to it, so an unassigned slot degrades to fg instead of reading
         // past the end of the array.
-        o.rgb = linearFromSRGB(palette[g.color & \(paletteSlots - 1)u].rgb);
-        o.alpha = float(g.color >> 8) / 255.0;
-        if ((g.color & 0xFFu) == \(Ink.caret.rawValue)u) { o.alpha *= caretAlpha(u.caretTime); }
+        ushort ink = g.color & \(paletteSlots - 1)u;
+        o.rgb = linearFromSRGB(palette[ink].rgb);
+        // **The animation engine, in one multiply.** Every palette slot carries
+        // a phase in 0...1 that the CPU owns (BeamCore.Animator); fading a
+        // thing is a property of the colour it is drawn in, so it costs no
+        // bytes per instance and no branch here. This replaces a special case
+        // for the caret and is cheaper than the special case was.
+        o.alpha = float(g.color >> 8) / 255.0 * phase[ink];
         return o;
     }
 
@@ -478,7 +468,7 @@ final class Renderer {
     /// that was never cleared).
     private func encodeGrid(into cb: MTLCommandBuffer, target: MTLTexture,
                             buffer: MTLBuffer, planes: [Plane], flashing: Bool,
-                            caretTime: Float) -> Int? {
+                            phase: UnsafePointer<Float>) -> Int? {
         let rpd = MTLRenderPassDescriptor()
         let color = rpd.colorAttachments[0]!
         color.texture = target
@@ -503,8 +493,7 @@ final class Renderer {
                     // Centred, in whole pixels — see GlyphAtlas.Metrics.originX.
                     originPx: SIMD2(Float(atlas.metrics.originX(forWidthPx: target.width)),
                                     Float(atlas.metrics.originY(forHeightPx: target.height)))
-                        + plane.originOffsetPx,
-                    caretTime: caretTime)
+                        + plane.originOffsetPx)
                 if let s = plane.scissorPx {
                     let x = max(0, min(s.x, target.width)), y = max(0, min(s.y, target.height))
                     enc.setScissorRect(MTLScissorRect(
@@ -516,6 +505,8 @@ final class Renderer {
                 }
                 enc.setVertexBuffer(buffer, offset: first * MemoryLayout<Instance>.stride, index: 0)
                 enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+                enc.setVertexBytes(phase, length: Self.paletteSlots * MemoryLayout<Float>.stride,
+                                   index: 2)
                 enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                                    instanceCount: count)
                 drawCalls += 1
@@ -531,7 +522,7 @@ final class Renderer {
     /// software path); onPresented fires with the drawable's presentedTime.
     func renderStaged(layer: CAMetalLayer,
                       planes: [Plane],
-                      caretTime: Float = -1,
+                      phase: [Float],
                       onCommit: ((Double) -> Void)? = nil,
                       onPresented: ((Double) -> Void)? = nil) {
         let buffer = instanceRing[ringIndex]
@@ -547,10 +538,16 @@ final class Renderer {
         let flashing = flashFramesRemaining > 0
         if flashing { flashFramesRemaining -= 1 }
 
+        var phaseCopy = phase
+        let phasePtr = UnsafeMutablePointer<Float>.allocate(capacity: Self.paletteSlots)
+        defer { phasePtr.deallocate() }
+        for i in 0..<Self.paletteSlots { phasePtr[i] = i < phaseCopy.count ? phaseCopy[i] : 1 }
+        _ = phaseCopy
+
         guard let cb = queue.makeCommandBuffer(),
               let drawCalls = encodeGrid(into: cb, target: drawable.texture, buffer: buffer,
                                          planes: planes, flashing: flashing,
-                                         caretTime: caretTime) else {
+                                         phase: phasePtr) else {
             inflight.signal()
             return
         }
@@ -587,15 +584,18 @@ final class Renderer {
     /// frames are the price. What keeps the price bounded is that the blink is
     /// **finite** — see `GridView.caretTime`.
     @discardableResult
-    func rePresentCaret(layer: CAMetalLayer, caretTime: Float) -> Bool {
+    func rePresentPhases(layer: CAMetalLayer, phase: [Float]) -> Bool {
         guard !lastPlanes.isEmpty else { return false }
         inflight.wait()
+        let rePtr = UnsafeMutablePointer<Float>.allocate(capacity: Self.paletteSlots)
+        defer { rePtr.deallocate() }
+        for i in 0..<Self.paletteSlots { rePtr[i] = i < phase.count ? phase[i] : 1 }
         let buffer = instanceRing[lastBufferIndex]
         guard let drawable = layer.nextDrawable(),
               let cb = queue.makeCommandBuffer(),
               let drawCalls = encodeGrid(into: cb, target: drawable.texture, buffer: buffer,
                                          planes: lastPlanes, flashing: false,
-                                         caretTime: caretTime) else {
+                                         phase: rePtr) else {
             inflight.signal()
             return false
         }
@@ -611,10 +611,15 @@ final class Renderer {
     /// window and no drawable, so it works on a machine whose display has
     /// cycled off and in CI, which has no display at all (PLAN.md §5.2).
     /// Synchronous: the texture is readable when this returns.
-    func renderOffscreen(width: Int, height: Int, planes: [Plane], caretTime: Float = -1) -> MTLTexture? {
+    func renderOffscreen(width: Int, height: Int, planes: [Plane],
+                         phase: [Float] = []) -> MTLTexture? {
         let buffer = instanceRing[ringIndex]
         ringIndex = (ringIndex + 1) % Self.ringDepth
         defer { inflight.signal() }
+
+        let offPtr = UnsafeMutablePointer<Float>.allocate(capacity: Self.paletteSlots)
+        defer { offPtr.deallocate() }
+        for i in 0..<Self.paletteSlots { offPtr[i] = i < phase.count ? phase[i] : 1 }
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: Self.pixelFormat, width: width, height: height, mipmapped: false)
@@ -623,7 +628,7 @@ final class Renderer {
         guard let target = device.makeTexture(descriptor: desc),
               let cb = queue.makeCommandBuffer(),
               encodeGrid(into: cb, target: target, buffer: buffer,
-                         planes: planes, flashing: false, caretTime: caretTime) != nil else { return nil }
+                         planes: planes, flashing: false, phase: offPtr) != nil else { return nil }
         cb.commit()
         cb.waitUntilCompleted()
         return target

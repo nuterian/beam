@@ -1054,6 +1054,81 @@ rule is now general enough to state once: **a bench that reports a timing withou
 proving its frames reached the glass is reporting fiction, whatever it is
 measuring.**
 
+## 5.6 Animation, as an engine capability
+
+Beam needed hover states, and hover states need a fade. Rather than add a
+second animation mechanism beside the caret's, both now run on one:
+
+> **Every palette slot carries a phase in `0...1`, and the shader multiplies it
+> into the alpha of every instance drawn in that ink.**
+
+Fading a thing is therefore not a property of the thing at all — it is a
+property of **the colour it is drawn in**. Three consequences, and they are the
+whole argument:
+
+- **Zero bytes per instance.** `Instance` is eight bytes and both halves of its
+  `color` word are already spoken for: eight bits of ink, eight of alpha. An
+  animation id would have had to widen it — on the keystroke path, forever, for
+  every glyph on screen. Keying off the ink costs nothing, because the ink is
+  already there.
+- **Zero branches in the shader.** One array index and one multiply. It replaces
+  the special case the caret used to need and is *strictly cheaper than what it
+  generalises*.
+- **One implementation of every curve.** The easing lives on the CPU
+  (`BeamCore.Animator`) and the GPU is handed a number. The caret's blink was
+  previously evaluated in the shader *and* mirrored on the CPU as a change
+  detector, and those two desynced twice in a single day (§5.5). There is now
+  one place a curve can be wrong.
+
+**Finite by construction**, which is what the entire idle-CPU budget rests on
+(§5.1). A transition has a duration, `step` reports when nothing is moving, and
+the render loop goes back to sleep. Nothing can animate forever unless a caller
+re-arms it every frame — which the caret does, deliberately, inside its own
+finite window.
+
+### What hover costs, and why it is nearly nothing
+
+The rule §5.3 set — *no editor-wide mouse tracking, because it wakes the render
+loop on every motion* — is kept, by making it precise instead of absolute. The
+tracking areas cover **the tab strip row and the rail column, and nothing else.**
+A pointer moving across code generates no events at all. A pointer moving across
+chrome generates one event per motion and a **repaint only when the target
+changes**, not per pixel. Between transitions the phase is pinned at 0 or 1 and
+no frames are needed at all.
+
+### What makes it read as modern rather than as a rectangle
+
+Two things happen together, and the second is the one most implementations
+skip: the tile fades in, **and the content itself brightens**. A tab's label and
+a rail's icon are drawn twice — once at rest, once in `hoverText` — and the
+phase cross-fades the bright copy in over the resting one. A hover where only a
+rectangle appears is a rectangle appearing; a hover where the thing you are
+pointing at *warms up* is what the eye reads as responsive.
+
+Two calibrations that are not taste:
+
+- **The hover tile is drawn at partial alpha on recessed chrome.** At full
+  strength a hovered background tab came out *lighter than the front tab*,
+  which inverts the hierarchy: the thing under the pointer must never outrank
+  the thing you actually have open. Alpha and the animation phase multiply, so
+  that is one lever rather than two.
+- **Moving between two adjacent targets keeps the phase.** The highlight travels
+  at full strength and fades only at the edges of the strip — which is what a
+  good tab bar does, and what a cross-fade between neighbours would get wrong.
+
+### The fast loop
+
+`scripts/check.sh` is the companion to `scripts/gate.sh` and exists because most
+interface work does not need the photon benches: it builds, runs the headless
+correctness suite, lays out every surface through `--dump-scene`, and writes
+every screenshot — in well under a minute, with **no display at all**. The gate
+stays what you run before merging. A design loop that costs minutes per look is
+a design loop nobody takes enough turns of.
+
+`--screenshot` renders the *settled* frame, so a hover state has nothing to show
+at rest; a `SceneStates.State` may therefore pin the phases it is about. That is
+why `hover-tab` and `hover-rail` are surfaces the tools can draw at all.
+
 ## 6. Phases (each ships its benchmarks first; no merge red)
 
 **Phase 0 — Skeleton + harness.** Nothing else starts until green.

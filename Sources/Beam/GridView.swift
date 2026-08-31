@@ -119,6 +119,24 @@ final class GridView: NSView {
     /// link is **paused**, which is the difference between a blink that costs a
     /// 60 Hz callback for ten seconds and one that costs eight ticks a second.
     private var caretWake: Timer?
+    /// Beam's animation engine: a phase per palette slot, eased on the CPU and
+    /// multiplied into alpha by the shader (BeamCore.Animator).
+    private var animator = Animator()
+
+    /// The phase table for this frame, with the caret folded in.
+    ///
+    /// The caret is not an eased transition — it is a continuous function of
+    /// time — so it is *held* rather than eased, which is also why its curve
+    /// belongs on the CPU beside every other curve instead of duplicated into
+    /// the shader where it desynced twice (PLAN.md §5.5).
+    private func phases(at now: Double) -> [Float] {
+        animator.hold(Int(Renderer.Ink.caret.rawValue), at: Self.caretAlpha(caretTime))
+        // Once the fade-out has finished there is nothing left to draw, so the
+        // target is forgotten — held until then precisely so there IS something
+        // to fade.
+        if animator.phase(hoverSlot) == 0, app.hover != nil { app.hover = nil }
+        return animator.phase
+    }
     /// Solid while typing and for a beat afterwards, so the blink never
     /// competes with the thing you are actually doing.
     private static let caretSolidGrace = 0.5
@@ -166,7 +184,13 @@ final class GridView: NSView {
         app.onNeedsRender = { [weak self] in self?.requestRender() }
         app.onNeedsStatusRender = { [weak self] in self?.requestStatusRender() }
         app.onRemoteEdit = { [weak self] t0 in self?.noteInput(t0: t0, remote: true) }
-        app.onOverlayChanged = { [weak self] in self?.updateTrackingAreas() }
+        app.onOverlayChanged = { [weak self] in
+            guard let self else { return }
+            self.app.hover = nil
+            self.animator.hold(self.hoverSlot, at: 0)
+            self.animator.hold(self.hoverTextSlot, at: 0)
+            self.updateTrackingAreas()
+        }
         app.onRunCommand = { [weak self] id in
             guard let self, let c = Commands.command(id: id) else { return }
             c.run(self)
@@ -233,7 +257,7 @@ final class GridView: NSView {
                 if !self.windowIsKey, self.wasPulsing {
                     self.wasPulsing = false
                     self.lastPresentedPhase = -2
-                    self.renderer.rePresentCaret(layer: self.metalLayer, caretTime: -1)
+                    self.renderer.rePresentPhases(layer: self.metalLayer, phase: self.phases(at: monotonicNow()))
                 }
                 self.resumeDisplayLink()
             }
@@ -556,33 +580,111 @@ final class GridView: NSView {
         isSelecting = false
     }
 
-    /// Hover, and only while an overlay is open. Editor-wide mouse tracking
-    /// would wake the render loop on every motion — the exact shape of the
-    /// 3.4%-idle-CPU regression Phase 2 caught (PLAN.md §5.3).
+    /// Hover, on chrome only.
+    ///
+    /// The tracking areas cover the **tab strip row and the rail column, and
+    /// nothing else** — never the document. That is the whole performance
+    /// story: a pointer moving over code generates no events at all, so the
+    /// render loop is not woken by mouse motion, which is the shape of the
+    /// 3.4%-idle-CPU regression Phase 2 caught. Moving over chrome costs one
+    /// event per motion and a repaint only when the *target* changes, not on
+    /// every pixel.
     override func mouseMoved(with event: NSEvent) {
-        guard let kind = app.overlay else { return }
-        let (col, row) = gridPosition(event)
-        let pcol = Scene.overlayCol(cols: visibleCols, kind)
-        let i = Scene.overlayIndex(atRow: row)
-        let hover = (col >= pcol && col < pcol + Scene.overlayWidth(kind)
-                     && i >= 0 && i < app.overlayItems.count) ? i : -1
-        guard hover != app.overlayHover else { return }
-        app.overlayHover = hover
+        updateHover(at: gridPosition(event))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        updateHover(at: (col: -1, row: -1))
+    }
+
+    private func updateHover(at p: (col: Int, row: Int)) {
+        let target = hoverTarget(atCol: p.col, row: p.row)
+        guard target != app.hover || (target == nil) != (animator.phase(hoverSlot) == 0) else { return }
+        let now = monotonicNow()
+        if let target {
+            // Moving between two chrome targets keeps the phase where it is, so
+            // the highlight travels at full strength and only fades at the
+            // edges of the strip — which is what a good tab bar does, and what
+            // a cross-fade would get wrong.
+            app.hover = target
+            animator.ease(hoverSlot, to: 1, now: now)
+            animator.ease(hoverTextSlot, to: 1, now: now)
+        } else {
+            animator.ease(hoverSlot, to: 0, now: now)
+            animator.ease(hoverTextSlot, to: 0, now: now)
+        }
         requestRender()
     }
 
-    /// The tracking area is installed **with** the overlay and removed with it.
-    /// A permanently installed one would deliver a main-thread event for every
-    /// pixel of mouse motion over a window that has nothing to hover — the
-    /// exact shape of the 3.4%-idle-CPU regression Phase 2 caught, and the
-    /// thing PLAN.md §5.3 says does not happen.
+    private var hoverSlot: Int { Int(Renderer.Ink.hover.rawValue) }
+    private var hoverTextSlot: Int { Int(Renderer.Ink.hoverText.rawValue) }
+
+    /// Which piece of chrome a cell belongs to, or nil for anything else —
+    /// including every cell of the document.
+    private func hoverTarget(atCol col: Int, row: Int) -> AppModel.HoverTarget? {
+        guard col >= 0, row >= 0 else { return nil }
+        let L = Scene.EditorLayout(cols: visibleCols, rows: visibleRows,
+                                   lineCount: app.doc.buffer.lineCount)
+        if let kind = app.overlay {
+            _ = kind
+            let pcol = Scene.overlayCol(cols: visibleCols, app.overlay ?? .files)
+            let i = Scene.overlayIndex(atRow: row)
+            let width = Scene.overlayWidth(app.overlay ?? .files)
+            if col >= pcol, col < pcol + width, i >= 0, i < app.overlayItems.count {
+                return .overlayRow(i)
+            }
+            return nil
+        }
+        guard app.surface == .editor else { return nil }
+        if row == L.tabRow {
+            var found: AppModel.HoverTarget?
+            Scene.forEachTab(app, L) { i, start, width in
+                if found == nil, col >= start, col < start + width, i != app.activeIndex {
+                    found = .tab(i)
+                }
+            }
+            return found
+        }
+        if col < L.railCols, row >= L.railTopRow {
+            let i = Scene.railIndex(atRow: row, L)
+            if i >= 0, i < Scene.railItems.count, app.overlay != Scene.railItems[i].overlay {
+                return .rail(i)
+            }
+        }
+        return nil
+    }
+
+    /// Tracking areas over the chrome, and only the chrome. Rebuilt on layout
+    /// because the tab row and the rail move with it.
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for a in trackingAreas { removeTrackingArea(a) }
-        guard app.overlay != nil else { return }
-        addTrackingArea(NSTrackingArea(rect: bounds,
-                                       options: [.activeInKeyWindow, .mouseMoved, .inVisibleRect],
-                                       owner: self, userInfo: nil))
+        let scale = window?.backingScaleFactor ?? 2
+        let m = renderer.atlas.metrics
+        let cellW = CGFloat(m.cellWidthPx) / scale, cellH = CGFloat(m.cellHeightPx) / scale
+        let ox = CGFloat(m.originX(forWidthPx: Int(metalLayer.drawableSize.width))) / scale
+        let oy = CGFloat(m.originY(forHeightPx: Int(metalLayer.drawableSize.height))) / scale
+        let L = Scene.EditorLayout(cols: visibleCols, rows: visibleRows,
+                                   lineCount: app.doc.buffer.lineCount)
+        func rect(cols: Range<Int>, rows: Range<Int>) -> NSRect {
+            let top = oy + CGFloat(rows.lowerBound) * cellH
+            return NSRect(x: ox + CGFloat(cols.lowerBound) * cellW,
+                          y: bounds.height - top - CGFloat(rows.count) * cellH,
+                          width: CGFloat(cols.count) * cellW,
+                          height: CGFloat(rows.count) * cellH)
+        }
+        var areas: [NSRect] = []
+        if app.overlay != nil {
+            areas.append(bounds)                                   // the panel owns the window
+        } else if app.surface == .editor {
+            areas.append(rect(cols: L.tabCol..<L.cols, rows: L.tabRow..<(L.tabRow + 1)))
+            areas.append(rect(cols: 0..<L.railCols, rows: L.railTopRow..<L.statusRow))
+        }
+        for r in areas where r.width > 0 && r.height > 0 {
+            addTrackingArea(NSTrackingArea(
+                rect: r, options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited],
+                owner: self, userInfo: nil))
+        }
     }
 
     private func selectWord(around offset: Int) {
@@ -726,6 +828,9 @@ final class GridView: NSView {
         let now = monotonicNow()
         // Fades are finite: this keeps the link awake for ~200 ms and then it
         // pauses like any other quiet period. Nothing in Beam animates forever.
+        // Finite by rule: `step` reports when nothing is moving and the loop
+        // goes back to sleep on the next quiet tick.
+        if animator.step(now: now) { dirty = true }
         if !dirty && app.isAnimating(now) { dirty = true }
         if dirty {
             dirty = false
@@ -751,7 +856,7 @@ final class GridView: NSView {
                 let alpha = Self.caretAlpha(phase)
                 if abs(alpha - lastPresentedPhase) > 1.0 / 255 {
                     lastPresentedPhase = alpha
-                    renderer.rePresentCaret(layer: metalLayer, caretTime: phase)
+                    renderer.rePresentPhases(layer: metalLayer, phase: phases(at: now))
                     nextCaretChangeAt = 0                 // mid-ramp: check every tick
                     return
                 }
@@ -779,7 +884,7 @@ final class GridView: NSView {
                 caretWake?.invalidate()
                 caretWake = nil
                 lastPresentedPhase = -2
-                renderer.rePresentCaret(layer: metalLayer, caretTime: -1)
+                renderer.rePresentPhases(layer: metalLayer, phase: phases(at: monotonicNow()))
             }
             idleTicks += 1
             if idleTicks > idleTicksBeforePause { link.isPaused = true }
@@ -852,7 +957,7 @@ final class GridView: NSView {
         renderer.renderStaged(
             layer: metalLayer,
             planes: planes,
-            caretTime: caretTime,
+            phase: phases(at: monotonicNow()),
             onCommit: (remote ? nil : t0).map { start in
                 { commitTime in
                     DispatchQueue.main.async { self.recorder.recordCommit((commitTime - start) * 1000) }

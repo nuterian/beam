@@ -76,8 +76,14 @@ enum Screenshot {
             // Far past every fade: a screenshot shows the settled frame, never
             // a frame caught mid-arrival.
             let planes = state.build(&w, monotonicNow() + 10, cols, rows, widthPx, heightPx)
+            // A screenshot is the settled frame: every phase at rest, which for
+            // the caret means solid and for a hover means invisible.
+            var settled = [Float](repeating: 1, count: Renderer.paletteSlots)
+            settled[Int(Renderer.Ink.hover.rawValue)] = 0
+            settled[Int(Renderer.Ink.hoverText.rawValue)] = 0
+            for (ink, value) in state.phases { settled[Int(ink.rawValue)] = value }
             guard let texture = renderer.renderOffscreen(
-                    width: widthPx, height: heightPx, planes: planes) else {
+                    width: widthPx, height: heightPx, planes: planes, phase: settled) else {
                 FileHandle.standardError.write("offscreen render failed for \(state.key)\n".data(using: .utf8)!)
                 exit(1)
             }

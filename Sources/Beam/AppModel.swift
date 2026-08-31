@@ -88,6 +88,16 @@ final class AppModel {
         case pairing     // six digits on both screens, awaiting the host's return
     }
 
+    /// What the pointer is over. Only chrome is hoverable: the document has
+    /// nothing to hover, and tracking it would wake the render loop on every
+    /// mouse motion — the shape of the 3.4%-idle-CPU regression Phase 2 caught
+    /// (PLAN.md §5.3).
+    enum HoverTarget: Equatable {
+        case tab(Int)
+        case rail(Int)
+        case overlayRow(Int)
+    }
+
     /// The overlay is one mechanism with two lists. It is a LAYER over the
     /// editor, not a surface: the document stays behind it, dimmed.
     enum Overlay {
@@ -175,6 +185,12 @@ final class AppModel {
 
     private(set) var overlayQuery = ""
     private(set) var overlaySelection = 0
+    /// What the pointer is over, or what it *was* over while the fade-out
+    /// still has something to draw. It is cleared by the view when the hover
+    /// phase reaches zero, not on the way out — otherwise the highlight would
+    /// vanish instantly and there would be nothing left to fade.
+    var hover: HoverTarget?
+
     /// Row the pointer is over, or -1. Mouse tracking is installed WITH the
     /// overlay and removed with it: editor-wide hover would wake the render
     /// loop on every mouse motion, which is the shape of the 3.4%-idle-CPU

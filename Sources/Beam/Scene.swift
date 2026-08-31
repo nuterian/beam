@@ -475,6 +475,11 @@ enum Scene {
     /// icon itself is 36 px in a 72 px pitch, so it is exactly half air, which
     /// is the ratio a row of targets wants.
     static let railRowStride = 2
+    /// How strong a hover tile is on chrome that is *recessed* at rest. Full
+    /// strength put a hovered background tab above the front one, which inverts
+    /// the hierarchy; this lands it just short of the ground. Overlay rows sit
+    /// on a lit panel and use the full value.
+    static let hoverTileAlpha: UInt8 = 130
     static func railRow(_ i: Int, _ layout: EditorLayout) -> Int {
         layout.railTopRow + i * railRowStride
     }
@@ -693,6 +698,23 @@ enum Scene {
             stripEnd = col + width
             if !active {
                 w.fill(col: col, row: L.tabRow, cols: width, rows: 1, ink: .scrim, alpha: recess)
+                // Hover **lifts the tab out of the recess**, toward the ground
+                // the front tab already is. That is the right direction on a
+                // strip whose resting state is sunken: the pointer previews
+                // what clicking would do. It is drawn in `.hover`, whose alpha
+                // the shader multiplies by that slot's animation phase, so the
+                // fade costs this code nothing and knows nothing about time
+                // (BeamCore.Animator, PLAN.md §5.6).
+                if app.hover == .tab(i) {
+                    // At partial alpha, so hover lands just SHORT of the ground
+                    // the active tab already is. At full strength it overshot
+                    // past the front tab, which inverts the hierarchy: the
+                    // thing under the pointer must never outrank the thing you
+                    // actually have open. Alpha and the animation phase
+                    // multiply, so this is one lever, not two.
+                    w.fill(col: col, row: L.tabRow, cols: width, rows: 1,
+                           ink: .hover, alpha: hoverTileAlpha)
+                }
                 if i > 0 {
                     // A seam between adjacent recessed tabs, never against the
                     // active one — the tone step already separates that one.
@@ -701,6 +723,12 @@ enum Scene {
             }
             w.text(tabLabel(app, i), col: col + tabPadding, row: L.tabRow,
                    ink: active ? .fg : .dim)
+            if !active, app.hover == .tab(i) {
+                // The same label again, brighter, in an animated slot: the
+                // phase cross-fades it in over the resting one, so the text
+                // *warms up* under the pointer rather than switching.
+                w.text(tabLabel(app, i), col: col + tabPadding, row: L.tabRow, ink: .hoverText)
+            }
             let mark = tabMarkCol(app, i, startCol: col)
             if d.isModified {
                 // `dim` on a background tab too, not `faint`. The dot is the
@@ -743,8 +771,18 @@ enum Scene {
             // said "selected row" in a rail that has no rows.
             let c = (L.railCols - 2) / 2
             if active { w.fill(col: c, row: r, cols: 2, rows: 1, ink: .surface) }
+            else if app.hover == .rail(i) {
+                // Drawn in `.hover`, whose alpha the shader multiplies by that
+                // slot's animation phase — the fade costs this code nothing and
+                // knows nothing about time (BeamCore.Animator, PLAN.md §5.6).
+                w.fill(col: c, row: r, cols: 2, rows: 1, ink: .hover, alpha: hoverTileAlpha)
+            }
             w.put(col: c, row: r, glyph: item.icon, ink: ink)
             w.put(col: c + 1, row: r, glyph: item.icon + 1, ink: ink)
+            if !active, app.hover == .rail(i) {
+                w.put(col: c, row: r, glyph: item.icon, ink: .hoverText)
+                w.put(col: c + 1, row: r, glyph: item.icon + 1, ink: .hoverText)
+            }
         }
 
         // **No hairlines here at all any more.** There used to be two: one down
@@ -941,7 +979,7 @@ enum Scene {
             let r = overlayRow(i)
             if i == app.overlaySelection {
                 w.fill(col: pcol + 1, row: r, cols: width - 1, rows: 1, ink: .selection)
-            } else if i == app.overlayHover {
+            } else if app.hover == .overlayRow(i) {
                 w.fill(col: pcol + 1, row: r, cols: width - 1, rows: 1, ink: .hover)
             }
             var c = pcol + 2
