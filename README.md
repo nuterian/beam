@@ -6,7 +6,7 @@
 
 <p align="center">
   A native macOS code editor with a budget for every millisecond.<br>
-  <a href="https://nuterian.github.io/beam/">Website</a> ·
+  <a href="https://jugalm.com/beam/">Website</a> ·
   <a href="https://github.com/nuterian/beam/releases/latest/download/Beam.dmg">Download for macOS</a> ·
   <a href="PLAN.md">The plan</a> ·
   <a href="perf/budgets.json">Budgets</a>

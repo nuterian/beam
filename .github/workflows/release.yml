@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   dmg:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -53,14 +53,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          SHA=$(git rev-parse --short HEAD)
+          # The notes live in docs/release-notes.md rather than inline: a
+          # multi-line string inside a YAML block scalar cannot terminate a
+          # heredoc (the closing word has to be unindented), and a release note
+          # that silently truncates is the kind of thing nobody notices until
+          # somebody reads it. Keeping it a file also makes it reviewable in a
+          # diff, which is the same argument --dump-scene rests on.
+          sed -e "s/__SHA__/$(git rev-parse --short HEAD)/" \
+              -e "s/__DATE__/$(date -u +'%Y-%m-%d')/" \
+              docs/release-notes.md > /tmp/notes.md
+          cat /tmp/notes.md
           # Delete and recreate, so `latest` really is the newest build and the
           # download URL never points at a stale asset.
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
           gh release create latest dist/Beam.dmg \
             --title "Beam (latest build)" \
-            --notes "Built from \`${SHA}\` on $(date -u +'%Y-%m-%d'). Apple silicon, macOS 14+.
-
-**This build is ad-hoc signed and not notarized.** macOS will refuse the first double-click: right-click (or Control-click) Beam in Applications and choose **Open**, then confirm. You only have to do it once.
-
-See [what Beam is not, yet](https://nuterian.github.io/beam/#honest) before trusting it with anything — in particular, collaborative editing is an early shared-grid model and not yet a CRDT."
+            --notes-file /tmp/notes.md
