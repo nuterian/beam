@@ -97,6 +97,9 @@ final class AppModel {
         case newTab
         case rail(Int)
         case overlayRow(Int)
+        /// An actionable segment of the status line, by index into
+        /// `Scene.statusSegments` (PLAN.md §5.7). Readouts never produce one.
+        case status(Int)
     }
 
     /// The overlay is one mechanism with two lists. It is a LAYER over the
@@ -108,6 +111,13 @@ final class AppModel {
         /// bar is built from, so there is one answer to "what can this do" and
         /// two ways to reach it (PLAN.md §5.4).
         case commands
+        /// The two pickers the status line opens (PLAN.md §5.7). They are the
+        /// same mechanism as the other three — a transient layer over the
+        /// document, gone the moment you have chosen — which is the whole
+        /// reason a status segment could be made clickable without adding any
+        /// chrome to the window.
+        case language
+        case indent
     }
 
     /// One row in whichever list the overlay is showing.
@@ -120,6 +130,10 @@ final class AppModel {
         var path: String?
         var peerIndex: Int?
         var commandID: String?
+        /// The language to switch this document to (PLAN.md §5.7).
+        var languageName: String?
+        /// The indentation to set: tabs or spaces, and how wide.
+        var indent: (tabs: Bool, width: Int)?
         /// The key equivalent, shown right-aligned the way a menu shows it.
         var shortcut: String?
     }
@@ -416,6 +430,21 @@ final class AppModel {
             closeOverlay()
             onRunCommand?(id)
             return true
+        case .language:
+            guard let name = item.languageName, let lang = Language.named(name) else { return false }
+            closeOverlay()
+            // A whole-file reset, because the carry state (a block comment, a
+            // string) is language-specific and re-lexing only the visible lines
+            // would leave every line above them coloured by the old grammar.
+            doc.highlighter.reset(language: lang, buffer: doc.buffer)
+            onNeedsRender?()
+            return true
+        case .indent:
+            guard let ind = item.indent else { return false }
+            closeOverlay()
+            doc.setIndent(tabs: ind.tabs, width: ind.width)
+            onNeedsRender?()
+            return true
         }
     }
 
@@ -483,6 +512,28 @@ final class AppModel {
                     return OverlayItem(title: group + c.title, commandID: c.id, shortcut: c.shortcut)
                 }
             overlayEmptyLines = [("no command matches.", .dim)]
+        case .language:
+            // Every language the lexer has a table for, plus the one that turns
+            // highlighting off. Adding a language is data (BeamCore.Lexer), and
+            // this list is that same data — so a language Beam can highlight
+            // can always be chosen, and one it cannot never appears.
+            let q = overlayQuery.lowercased()
+            overlayItems = Language.all
+                .filter { q.isEmpty || $0.name.hasPrefix(q) }
+                .map { OverlayItem(title: $0.name, languageName: $0.name) }
+            overlayEmptyLines = [("no language matches.", .dim)]
+        case .indent:
+            // Tabs or spaces, at the four widths anyone actually uses. A free
+            // number entry here would be a text field — an AppKit control in an
+            // app whose whole claim is that it has none — for a setting with
+            // four real answers.
+            overlayItems = [true, false].flatMap { tabs in
+                [2, 4, 8].map { width in
+                    OverlayItem(title: (tabs ? "tabs" : "spaces") + "  \(width)",
+                                indent: (tabs: tabs, width: width))
+                }
+            }
+            overlayEmptyLines = []
         case .none:
             overlayItems = []
         }
@@ -774,7 +825,7 @@ final class AppModel {
         case .files:
             overlayItems = files.map { OverlayItem(title: $0, path: $0) }
             overlayEmptyLines = [("nothing matches.", .dim)]
-        case .peers, .commands:
+        case .peers, .commands, .language, .indent:
             rebuildOverlayItems()
         }
     }

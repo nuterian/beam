@@ -173,10 +173,18 @@ final class EditorBench {
     /// Switching tabs, by the shortcut, through the real command table. A
     /// second document is opened first so there is something to switch to.
     private func beginTabSwitch() {
-        app.openDocument(path: (filePath as NSString).deletingLastPathComponent
-                         + "/module_1_render.rs")
-        guard app.documents.count > 1 else {
-            FileHandle.standardError.write("tab pass: the second document did not open\n".data(using: .utf8)!)
+        let second = (Self.treeRoot as NSString).appendingPathComponent(Self.treeFile(1))
+        app.openDocument(path: second)
+        // **Counting tabs is not checking that a document opened.** A failed
+        // open still appends a tab — with no path and an `ioError` — so the old
+        // `documents.count > 1` guard passed while the front document was a
+        // read failure, and every pass after this one measured the wrong thing.
+        // The honest check is that the path this asked for is the path that is
+        // now in front.
+        guard app.documents.count > 1, app.doc.path == second else {
+            FileHandle.standardError.write(
+                "tab pass: the second document did not open (\(app.doc.ioError ?? "no path")) — \(second)\n"
+                    .data(using: .utf8)!)
             exit(4)
         }
         view.recorder.reset()
@@ -282,18 +290,38 @@ final class EditorBench {
     /// on how long the machine has been up is not a gate.
     static let treeFiles = 2_000
 
+    static var treeRoot: String {
+        (NSTemporaryDirectory() as NSString).appendingPathComponent("beam-bench-tree")
+    }
+    private static let treeDirs = ["src", "src/render", "docs", "tests"]
+
+    /// Where generated tree file `i` lives, relative to the root. **One rule,
+    /// two callers** — the generator writes it and the tab pass opens it.
+    ///
+    /// Those were written out separately once, and disagreed: the tab pass
+    /// asked for `src/module_1_render.rs` while the generator had put module 1
+    /// in `src/render/`. The open failed; a failed open still appends a tab, so
+    /// the `documents.count > 1` guard passed; the front document then had no
+    /// path, so the file index scanned the process's WORKING DIRECTORY instead
+    /// of the tree — 94 candidates against the 2,001 the row exists to measure
+    /// — and the bench correctly refused to publish. That refusal is why this
+    /// branch had never passed the gate. A path derived twice is a path that
+    /// disagrees with itself, which is the same lesson `forEachTab` records for
+    /// drawing and hit-testing a tab.
+    static func treeFile(_ i: Int) -> String {
+        "\(treeDirs[i % treeDirs.count])/module_\(i)_render.rs"
+    }
+
     static func writeSampleFile() -> String? {
         let fm = FileManager.default
-        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("beam-bench-tree")
+        let root = treeRoot
         try? fm.removeItem(atPath: root)
-        for d in ["src", "src/render", "docs", "tests"] {
+        for d in treeDirs {
             try? fm.createDirectory(atPath: (root as NSString).appendingPathComponent(d),
                                     withIntermediateDirectories: true)
         }
-        let dirs = ["src", "src/render", "docs", "tests"]
         for i in 0..<treeFiles {
-            let name = "\(dirs[i % dirs.count])/module_\(i)_render.rs"
-            fm.createFile(atPath: (root as NSString).appendingPathComponent(name),
+            fm.createFile(atPath: (root as NSString).appendingPathComponent(treeFile(i)),
                           contents: Data("// \(i)\n".utf8))
         }
 

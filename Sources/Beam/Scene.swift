@@ -110,6 +110,30 @@ enum Scene {
     /// The dump prints nothing for it, correctly — this is lighting, not
     /// structure.
     static let recess: UInt8 = 132
+
+    /// **Air between the tab strip and the first line of code, in device
+    /// pixels — and it costs no editing row** (PLAN.md §5.7).
+    ///
+    /// §5.4 won two editing rows by putting the tabs in the traffic-light band,
+    /// and the document then began in the row immediately under them with
+    /// nothing in between: the top line of the file sat hard against the strip,
+    /// which is the single place Beam read as denser than it should while being
+    /// *emptier* than VS Code everywhere else. The row that would fix it is the
+    /// scarcest thing in the layout, so it does not buy one.
+    ///
+    /// It does not have to. The **document plane already carries a whole-pixel
+    /// origin offset** — that is the machinery pixel-quantized scrolling is
+    /// built on (§5.3) — so the document can be inset from its own viewport by
+    /// pixels instead of by cells. A third of a cell reads as deliberate air
+    /// and takes a third of a line off the bottom-most row, which is the same
+    /// partial row any pixel-quantized scroll already shows.
+    ///
+    /// Integer division, so it is a whole device pixel at every zoom step.
+    /// **Anything that maps a point back to a line must apply it too** —
+    /// `GridView.offset(atCol:row:)` is the only such place, and a gap applied
+    /// on one side of that pair and not the other is an editor whose clicks
+    /// land on the wrong line.
+    static func docTopGapPx(cellHeightPx: Int) -> Int { cellHeightPx / 3 }
     /// First row anything is drawn on. Rows 0–2 are the band the traffic lights
     /// occupy; leaving them clear is what makes a title-less window look
     /// deliberate rather than broken.
@@ -276,12 +300,17 @@ enum Scene {
             return [
                 Renderer.Plane(
                     count: documentCount,
-                    // Whole pixels: the sub-cell remainder of the scroll, and
-                    // nothing else. This is what makes scrolling continuous
-                    // while every glyph still lands on a device pixel.
-                    originOffsetPx: SIMD2(0, Float(-(app.doc.scrollPx % cellH))),
+                    // Whole pixels, and now two of them: the sub-cell remainder
+                    // of the scroll — which is what makes scrolling continuous
+                    // while every glyph still lands on a device pixel — and the
+                    // designed inset below the tab strip (`docTopGapPx`).
+                    originOffsetPx: SIMD2(0, Float(docTopGapPx(cellHeightPx: cellH)
+                                                   - (app.doc.scrollPx % cellH))),
                     // A line scrolled halfway out is clipped here rather than
-                    // allowed to run under the filename or the status line.
+                    // allowed to run under the tab strip or the status line.
+                    // The viewport itself does not move with the inset: the gap
+                    // is the document sitting lower *inside* it, so the bottom
+                    // row gives up the same third of a cell the top gained.
                     scissorPx: (x: 0, y: originY + L.topRow * cellH,
                                 width: widthPx, height: L.docRows * cellH)),
                 Renderer.Plane(count: w.count - documentCount),
@@ -323,7 +352,14 @@ enum Scene {
         /// The left icon rail, in cells. Vertical chrome costs zero editing
         /// rows, which is the entire reason the rail is where the navigation
         /// lives (PLAN.md §5.4).
-        let railCols = 4
+        ///
+        /// **Six cells, from four** (§5.7). At four it was a 72 px column — 36
+        /// pt against VS Code's 48 pt activity bar — carrying an 18 pt icon,
+        /// and it read as a margin somebody had put two smudges in. Six cells
+        /// is 108 px / 54 pt, and it holds §5.7's 72 px icon with exactly one
+        /// cell of air on each side. Horizontal is the axis Beam has to spare
+        /// (§5.4); vertical is the one it does not, and this costs none of it.
+        let railCols = 6
         /// Width of the line-number field, in cells: **as many digits as this
         /// document actually has**, never fewer than two.
         ///
@@ -468,13 +504,16 @@ enum Scene {
         RailItem(icon: GlyphAtlas.filesIconIndex, commandID: "file.open", overlay: .files),
         RailItem(icon: GlyphAtlas.peersIconIndex, commandID: "session.peers", overlay: .peers),
     ]
-    /// Rail rows are two apart — a 72 px pitch at 2x, which is 36 pt against
-    /// VS Code's 48 pt activity bar and Zed's 40. Three rows was 54 pt: so much
-    /// air that two icons read as two unrelated marks rather than as a list of
-    /// places to go, and the column looked abandoned in the screenshots. The
-    /// icon itself is 36 px in a 72 px pitch, so it is exactly half air, which
-    /// is the ratio a row of targets wants.
-    static let railRowStride = 2
+    /// Rail rows, in rows of pitch. The icon is `GlyphAtlas.iconRows` tall, so
+    /// this is the icon plus its gap.
+    ///
+    /// It was 2 when the icon was 1 row — a 72 px pitch around a 36 px mark,
+    /// exactly half air, which is the ratio a row of targets wants. §5.7's icon
+    /// is 2 rows, so the pitch goes to 3: 108 px around a 72 px mark, which is
+    /// the same ratio the rail is now *wide* (72 in 108). The rail is therefore
+    /// a column of square targets on a square pitch, which is what an activity
+    /// bar is.
+    static let railRowStride = GlyphAtlas.iconRows + 1
     /// How strong a hover tile is on chrome that is *recessed* at rest. Full
     /// strength put a hovered background tab above the front one, which inverts
     /// the hierarchy; this lands it just short of the ground. Overlay rows sit
@@ -607,7 +646,7 @@ enum Scene {
             while i < range.upperBound {
                 let b = at(i)
                 if b == 0x09 {
-                    cell += Document.tabWidth - (cell % Document.tabWidth)
+                    cell += doc.tabWidth - (cell % doc.tabWidth)
                     i += 1
                     continue
                 }
@@ -667,14 +706,21 @@ enum Scene {
         // --- The frame. The rail and the status row are recessed regions
         // wrapping the document, so the ground between them reads as a lit page
         // sitting *in* the window rather than as the background everything else
-        // is painted on. See `recess`. The status band bleeds one row past the
-        // last one the layout claims: the grid's origin leaves half a cell of
-        // slack at the bottom of the drawable, and a band that stopped on the
-        // cell boundary would leave a lighter strip under itself. The GPU clips
-        // the overhang for free.
+        // is painted on. See `recess`.
+        //
+        // **The status band bleeds two rows past the last one the layout
+        // claims**, and the count is not arbitrary. §5.7 stopped splitting the
+        // vertical remainder between the two edges and gave all of it to this
+        // one, because the top edge belongs to the tab strip; the slack here is
+        // therefore `h mod cellH` plus a whole cell, which is strictly less
+        // than two cells. Two rows of overhang covers it at any window height
+        // and any zoom step, and the GPU clips the rest for free. One row
+        // covered the old centred layout and would now leave a lighter strip
+        // along the bottom edge — the exact defect this band exists to avoid,
+        // just moved.
         w.fill(col: 0, row: L.topRow, cols: L.railCols, rows: L.statusRow - L.topRow,
                ink: .scrim, alpha: recess)
-        w.fill(col: 0, row: L.statusRow, cols: cols, rows: 2, ink: .scrim, alpha: recess)
+        w.fill(col: 0, row: L.statusRow, cols: cols, rows: 3, ink: .scrim, alpha: recess)
 
         // Row 0: the tab strip, level with the traffic lights.
         //
@@ -795,24 +841,35 @@ enum Scene {
             if item.overlay == .peers, !active, let first = app.peers.first {
                 ink = .peer(first.inkIndex)
             }
-            // An icon is two cells wide, centred in the rail — and a cell is
-            // 1:2, so those two cells are a SQUARE. The active state is that
-            // square filled, which reads as the rounded tile every modern
-            // activity bar uses; the old full-width bar was a 2:1 slab that
-            // said "selected row" in a rail that has no rows.
-            let c = (L.railCols - 2) / 2
-            if active { w.fill(col: c, row: r, cols: 2, rows: 1, ink: .surface) }
-            else if app.hover == .rail(i) {
+            // An icon is `iconCols` wide by `iconRows` tall, centred in the
+            // rail — and a cell is 1:2, so that block is a SQUARE. The active
+            // state is that square filled, which reads as the rounded tile
+            // every modern activity bar uses; the old full-width bar was a 2:1
+            // slab that said "selected row" in a rail that has no rows.
+            let c = (L.railCols - GlyphAtlas.iconCols) / 2
+            if active {
+                w.fill(col: c, row: r, cols: GlyphAtlas.iconCols, rows: GlyphAtlas.iconRows,
+                       ink: .surface)
+            } else if app.hover == .rail(i) {
                 // Drawn in `.hover`, whose alpha the shader multiplies by that
                 // slot's animation phase — the fade costs this code nothing and
                 // knows nothing about time (BeamCore.Animator, PLAN.md §5.6).
-                w.fill(col: c, row: r, cols: 2, rows: 1, ink: .hover, alpha: hoverTileAlpha)
+                w.fill(col: c, row: r, cols: GlyphAtlas.iconCols, rows: GlyphAtlas.iconRows,
+                       ink: .hover, alpha: hoverTileAlpha)
             }
-            w.put(col: c, row: r, glyph: item.icon, ink: ink)
-            w.put(col: c + 1, row: r, glyph: item.icon + 1, ink: ink)
-            if !active, app.hover == .rail(i) {
-                w.put(col: c, row: r, glyph: item.icon, ink: .hoverText)
-                w.put(col: c + 1, row: r, glyph: item.icon + 1, ink: .hoverText)
+            // The icon's cells, left to right and top to bottom. The atlas lays
+            // an icon out as a block, so the slot for cell (dx, dy) is the base
+            // plus one per column and one atlas ROW per row. Drawn twice under
+            // the pointer: the phase cross-fades the bright copy in over the
+            // resting one, so the icon *warms up* rather than switching (§5.6).
+            let inks: [Renderer.Ink] = (!active && app.hover == .rail(i)) ? [ink, .hoverText] : [ink]
+            for pass in inks {
+                for dy in 0..<GlyphAtlas.iconRows {
+                    for dx in 0..<GlyphAtlas.iconCols {
+                        w.put(col: c + dx, row: r + dy,
+                              glyph: item.icon + UInt16(dy * GlyphAtlas.atlasCols + dx), ink: pass)
+                    }
+                }
             }
         }
 
@@ -858,21 +915,146 @@ enum Scene {
             w.fill(col: cols - 1, row: L.topRow + max(0, offset), cols: 1, rows: height, ink: .edge)
         }
 
-        // The status line: where you are on the left, who is here and how fast
-        // we are on the right.
+        // The status line's left-hand run: where you are, and what this file
+        // is. See `statusSegments`. It is bounded by where the right-hand run
+        // begins, and the right-hand run is never the one that yields.
+        let hudSpans = presenceSpans(app, now: now) + hud
         if doc.ioError == nil {
-            let pos = doc.buffer.position(ofOffset: doc.caret)
-            let c = w.text("\(pos.line + 1):\(doc.cellColumn(ofOffset: doc.caret) + 1)",
-                           col: L.codeCol, row: L.statusRow, ink: .faint)
-            if let sel = doc.selection {
-                w.text("  \(sel.count) selected", col: c, row: L.statusRow, ink: .faint)
+            let limit = hudStartCol(spans: hudSpans, cols: cols) - statusGap
+            forEachStatusSegment(app, L, limit: limit) { i, col, seg in
+                let n = seg.text.unicodeScalars.count
+                if app.hover == .status(i) {
+                    // Only a segment that *does* something lights up. A hover
+                    // under a readout is a promise the click does not keep —
+                    // `hoverTarget` returns nil for those, so this is drawing a
+                    // decision that was already made rather than repeating it.
+                    w.fill(col: col - 1, row: L.statusRow, cols: n + 2, rows: 1,
+                           ink: .hover, alpha: hoverTileAlpha)
+                }
+                // `dim` for a control, `faint` for a readout — the same step
+                // §5.4 used to stop an inactive tab being dimmer than a
+                // comment. It is the only thing that says which of these six
+                // you can press.
+                w.text(seg.text, col: col, row: L.statusRow,
+                       ink: seg.action == nil ? .faint : .dim)
+                if app.hover == .status(i) {
+                    w.text(seg.text, col: col, row: L.statusRow, ink: .hoverText)
+                }
             }
         }
-        hudLine(into: &w, spans: presenceSpans(app, now: now) + hud, cols: cols, rows: rows)
+        hudLine(into: &w, spans: hudSpans, cols: cols, rows: rows)
 
         if let overlay = app.overlay {
             self.overlay(app, overlay, into: &w, now: now, cols: cols, rows: rows)
         }
+    }
+
+    // MARK: - The status line
+
+    /// **One gap, everywhere.** The status line used to space its two facts at
+    /// 1, 2 and 3 cells with no system behind the choice, which §5.2 already
+    /// names as the difference between an instrument and debug output. Every
+    /// segment is now separated by the same three cells, so the line has a beat
+    /// and a new segment cannot invent its own spacing.
+    static let statusGap = 3
+
+    /// One segment of the status line's left-hand run.
+    struct StatusSegment {
+        let text: String
+        /// The overlay a click opens, or nil for a readout.
+        let action: AppModel.Overlay?
+    }
+
+    /// **What Beam knows about the document, said out loud** (PLAN.md §5.7).
+    ///
+    /// The line carried two facts — the caret's position and a selection count
+    /// — while the lexer had already resolved the language, the open path had
+    /// the encoding, and `Document` knew its own indentation and line endings.
+    /// None of it was hidden on purpose; it was hidden because nothing had ever
+    /// asked for it. An editor that knows four things about your file and shows
+    /// none of them reads as a prototype next to one that shows all four.
+    ///
+    /// **Two of them are actionable and two are readouts, and the difference is
+    /// visible.** Language and indentation open a picker through the same
+    /// overlay mechanism ⌘O and ⌘K already use, so they are set in `dim`; the
+    /// encoding and the line ending are facts you cannot currently change, so
+    /// they stay `faint` and do not light up under the pointer. Colouring a
+    /// readout as if it were a control is how a status bar teaches people to
+    /// stop clicking it.
+    ///
+    /// The right-hand run — presence and the latency readout — is untouched and
+    /// stays exactly where it is. It is the brand, and no other editor can
+    /// print it.
+    static func statusSegments(_ app: AppModel) -> [StatusSegment] {
+        let doc = app.doc
+        let pos = doc.buffer.position(ofOffset: doc.caret)
+        var segs = [StatusSegment(text: "\(pos.line + 1):\(doc.cellColumn(ofOffset: doc.caret) + 1)",
+                                  action: nil)]
+        if let sel = doc.selection {
+            segs.append(StatusSegment(text: "\(sel.count) selected", action: nil))
+        }
+        // **Ordered by what you would keep if you could only keep one.**
+        // `forEachStatusSegment` drops from the right when the window is too
+        // narrow, so this order IS the priority order, and it is not VS Code's:
+        // there the language sits at the far right, which on a run that
+        // truncates from the right would make the most informative fact the
+        // first one to disappear. The encoding goes first instead — it is the
+        // one segment that can only ever say one thing.
+        segs.append(StatusSegment(text: doc.highlighter.language.name, action: .language))
+        segs.append(StatusSegment(text: doc.indentsWithTabs ? "tabs \(doc.tabWidth)"
+                                                            : "spaces \(doc.tabWidth)",
+                                  action: .indent))
+        segs.append(StatusSegment(text: doc.lineEnding.rawValue, action: nil))
+        segs.append(StatusSegment(text: doc.encoding, action: nil))
+        return segs
+    }
+
+    /// Walks the left-hand run, handing each segment its index and start
+    /// column, and **stopping before it would reach `limit`**.
+    ///
+    /// Drawing and hit-testing both go through it, so a segment cannot be drawn
+    /// somewhere you cannot click it — the rule `forEachTab` exists for, and
+    /// the one the tab strip learned the hard way.
+    ///
+    /// The limit is where the right-hand run begins. The two runs share a row
+    /// and the left one grew from two facts to six in §5.7, so on a narrow
+    /// window they collide — and when they do it is the *left* run that gives
+    /// way, always. The latency readout is the brand and no other editor can
+    /// print it; a window narrow enough to lose "UTF-8" is not narrow enough to
+    /// lose that. Segments drop from the right, so the caret position — the one
+    /// that changes as you work — is the last thing to go.
+    static func forEachStatusSegment(_ app: AppModel, _ layout: EditorLayout, limit: Int,
+                                     _ body: (_ index: Int, _ startCol: Int,
+                                              _ seg: StatusSegment) -> Void) {
+        var c = layout.codeCol
+        for (i, seg) in statusSegments(app).enumerated() {
+            let n = seg.text.unicodeScalars.count
+            guard c + n <= limit else { return }
+            body(i, c, seg)
+            c += n + statusGap
+        }
+    }
+
+    /// Which segment a column on the status row falls in, or nil for a readout,
+    /// a gap, or a segment that did not fit.
+    static func statusSegment(atCol col: Int, _ app: AppModel, _ layout: EditorLayout,
+                              limit: Int) -> Int? {
+        var found: Int?
+        forEachStatusSegment(app, layout, limit: limit) { i, start, seg in
+            guard found == nil, seg.action != nil else { return }
+            // One cell of slop on each side, matching the hover tile's own
+            // extent, so the target is exactly the thing that lights up.
+            if col >= start - 1, col <= start + seg.text.unicodeScalars.count { found = i }
+        }
+        return found
+    }
+
+    /// Where the right-hand run starts, so the left one knows where to stop.
+    static func hudStartCol(spans: [Span], cols: Int) -> Int {
+        var width = 0
+        for s in spans { width += s.width }
+        guard width > 0 else { return cols - margin }
+        return max(0, cols - margin - width)
     }
 
     /// Presence, on the left of the status line's right-hand run.
@@ -927,8 +1109,21 @@ enum Scene {
     /// sized to its own content without resizing under your fingers.
     static let overlayListWidth = 44
 
+    /// Width of §5.7's two status-line pickers. Their longest row is
+    /// `javascript` and their whole job is to answer one short question, so at
+    /// the list width they were 44 cells of mostly nothing — the same failure
+    /// `overlayListWidth` was introduced to fix for the palette, one size down.
+    /// Width is a property of the KIND of overlay and never of what you have
+    /// typed, so a panel can be sized to its own content without resizing under
+    /// your fingers.
+    static let overlayPickerWidth = 26
+
     static func overlayWidth(_ kind: AppModel.Overlay) -> Int {
-        kind == .peers ? overlayWidth : overlayListWidth
+        switch kind {
+        case .peers: return overlayWidth
+        case .language, .indent: return overlayPickerWidth
+        case .files, .commands: return overlayListWidth
+        }
     }
 
     /// Grid row of result `i`, shared with the click hit-test.
@@ -977,6 +1172,8 @@ enum Scene {
         case .files: label = "open"
         case .peers: label = "who's nearby"
         case .commands: label = "run"
+        case .language: label = "language"
+        case .indent: label = "indent"
         }
         var c = w.text(label, col: pcol + 2, row: overlayTopRow + 1, ink: .faint) + 1
         c = w.text(app.overlayQuery, col: c, row: overlayTopRow + 1, ink: .fg)
@@ -1097,10 +1294,8 @@ enum Scene {
     /// reads, plus each peer's live RTT. We publish our latency because we are
     /// the only editor that can afford to.
     static func hudLine(into w: inout InstanceWriter, spans: [Span], cols: Int, rows: Int) {
-        var width = 0
-        for s in spans { width += s.width }
-        guard width > 0 else { return }
-        var col = max(0, cols - margin - width)
+        guard !spans.isEmpty else { return }
+        var col = hudStartCol(spans: spans, cols: cols)
         let row = max(0, rows - 1)
         for s in spans {
             if let g = s.glyph {

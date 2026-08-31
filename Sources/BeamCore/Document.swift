@@ -42,7 +42,72 @@ public final class Document {
 
     /// Cells a tab advances to. Real source has tabs in it, and a tab that does
     /// not advance the grid is the same corruption class as the UTF-8 bug.
-    public static let tabWidth = 4
+    ///
+    /// Per-document, and settable, because §5.7 put it on the status line and a
+    /// status segment that reports a fact you cannot change is a label. The
+    /// default is what it has always been.
+    public static let defaultTabWidth = 4
+    public var tabWidth = Document.defaultTabWidth
+    /// Whether this file indents with tabs. **Detected, not assumed** — it is a
+    /// property of the file in front of you, and guessing wrong makes every
+    /// line you add disagree with every line already there.
+    public private(set) var indentsWithTabs = false
+
+    /// What ends a line in this file.
+    public enum LineEnding: String {
+        case lf = "LF"
+        case crlf = "CRLF"
+    }
+    public private(set) var lineEnding: LineEnding = .lf
+
+    /// The text encoding. Beam reads and writes raw bytes and every path in it
+    /// — the lexer, the column arithmetic, the glyph cache — assumes UTF-8, so
+    /// this is a statement of what Beam *does* rather than a detected value,
+    /// and it is on the status line for exactly that reason: it is the one of
+    /// the four that cannot be anything else, and saying so is more useful than
+    /// leaving the user to wonder.
+    public let encoding = "UTF-8"
+
+    /// Reads the file's format off the top of the buffer.
+    ///
+    /// **Bounded, because this runs on the open path**, which is budgeted
+    /// (`open_1mb_file_to_first_paint_ms`). Indentation and line endings are
+    /// consistent within a file or they are not a property of it at all, so a
+    /// sample settles the question; walking a megabyte to answer it would put
+    /// the whole file inside a budget that exists to keep the first paint fast.
+    private static let formatSampleBytes = 16_384
+
+    private func detectFormat() {
+        let n = min(buffer.count, Self.formatSampleBytes)
+        var tabs = 0, spaces = 0, crlf = 0, lf = 0
+        var atLineStart = true
+        var i = 0
+        while i < n {
+            let b = buffer.byte(at: i)
+            if b == 0x0A {
+                if i > 0, buffer.byte(at: i - 1) == 0x0D { crlf += 1 } else { lf += 1 }
+                atLineStart = true
+            } else if atLineStart {
+                // Only the FIRST character of a line votes. Counting every
+                // leading space would let one deeply-indented block outvote the
+                // rest of the file.
+                if b == 0x09 { tabs += 1 } else if b == 0x20 { spaces += 1 }
+                atLineStart = false
+            }
+            i += 1
+        }
+        indentsWithTabs = tabs > spaces
+        lineEnding = crlf > lf ? .crlf : .lf
+    }
+
+    /// Sets what an indent is in this document. Chosen from the status line's
+    /// picker (PLAN.md §5.7); it changes what Tab inserts and how wide an
+    /// existing tab renders, and nothing else — no file is reformatted behind
+    /// your back on the strength of a status-bar click.
+    public func setIndent(tabs: Bool, width: Int) {
+        indentsWithTabs = tabs
+        tabWidth = max(1, width)
+    }
 
     public init() {
         buffer = TextBuffer()
@@ -81,6 +146,7 @@ public final class Document {
         scrollPx = 0
         undo.clear()
         highlighter.reset(language: .forPath(p), buffer: buffer)
+        detectFormat()
         return true
     }
 
@@ -111,6 +177,7 @@ public final class Document {
         anchor = nil
         undo.clear()
         highlighter.reset(language: .forPath(name), buffer: buffer)
+        detectFormat()
     }
 
     // MARK: - Editing
@@ -253,7 +320,7 @@ public final class Document {
         var i = r.lowerBound
         while i < min(offset, r.upperBound) {
             let b = buffer.byte(at: i)
-            if b == 0x09 { col += Self.tabWidth - (col % Self.tabWidth) } else if b & 0xC0 != 0x80 { col += 1 }
+            if b == 0x09 { col += tabWidth - (col % tabWidth) } else if b & 0xC0 != 0x80 { col += 1 }
             i += 1
         }
         return col
@@ -268,7 +335,7 @@ public final class Document {
         var i = r.lowerBound
         while i < r.upperBound {
             let b = buffer.byte(at: i)
-            let width = b == 0x09 ? Self.tabWidth - (col % Self.tabWidth) : 1
+            let width = b == 0x09 ? tabWidth - (col % tabWidth) : 1
             if b & 0xC0 != 0x80 {
                 if col + width > target { return i }
                 col += width

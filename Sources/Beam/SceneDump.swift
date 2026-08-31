@@ -49,6 +49,18 @@ enum SceneDump {
         print("+" + String(repeating: "-", count: cols) + "+")
     }
 
+    /// The letter a rail icon's block prints as, for any slot inside it.
+    private static func railIconLetter(_ glyph: UInt16) -> Character? {
+        for (base, letter) in [(GlyphAtlas.filesIconIndex, Character("f")),
+                               (GlyphAtlas.peersIconIndex, Character("p"))] {
+            let d = Int(glyph) - Int(base)
+            guard d >= 0 else { continue }
+            let row = d / GlyphAtlas.atlasCols, col = d % GlyphAtlas.atlasCols
+            if row < GlyphAtlas.iconRows && col < GlyphAtlas.iconCols { return letter }
+        }
+        return nil
+    }
+
     /// Glyph plus ink, because the block glyph is now four different things.
     ///
     /// Filled surfaces are what most separates a GUI from a TUI (PLAN.md §5.3),
@@ -79,16 +91,20 @@ enum SceneDump {
         case GlyphAtlas.barGlyphIndex: return "|"
         case GlyphAtlas.chipGlyphIndex: return "\u{25AA}"
         case GlyphAtlas.replacementGlyphIndex: return "\u{FFFD}"
-        // A rail icon is two cells wide; both halves print the same letter, so
-        // the rail is one glance in a diff rather than two mystery slots.
-        case GlyphAtlas.filesIconIndex, GlyphAtlas.filesIconIndex + 1: return "f"
-        case GlyphAtlas.peersIconIndex, GlyphAtlas.peersIconIndex + 1: return "p"
         case GlyphAtlas.caretGlyphIndex: return "|"
         case GlyphAtlas.dividerHIndex: return "\u{2500}"
         case GlyphAtlas.dividerVIndex: return "\u{2502}"
         case GlyphAtlas.tabAccentIndex: return "\u{2580}"
         default:
             if glyph < 95 { return Character(UnicodeScalar(UInt8(glyph) + 32)) }
+            // **A rail icon prints as one letter over its whole block.** It
+            // spans `iconCols` x `iconRows` cells, so every slot in that block
+            // is the same mark and printing them individually would give the
+            // rail eight mystery slots instead of one glance in a diff. This is
+            // computed from the block's extent rather than listed, because the
+            // list was written when an icon was two cells and silently stopped
+            // covering it when §5.7 made it eight.
+            if let ch = railIconLetter(glyph) { return ch }
             // A demand-rasterized slot: print the character it stands for, not
             // its slot number. The dump is only reviewable in a diff if a file
             // with an accent in it reads as that accent.

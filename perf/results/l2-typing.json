@@ -1,13 +1,13 @@
 {
-  "L2_local_render.burst_125hz_presented_p99_60hz_ms": 49.1163,
+  "L2_local_render.burst_125hz_presented_p99_60hz_ms": 48.9110,
   "L2_local_render.draw_calls_per_frame": 2,
-  "L2_local_render.first_keystroke_after_idle_max_ms": 68.7101,
-  "L2_local_render.first_keystroke_after_idle_p50_ms": 63.3418,
-  "L2_local_render.keystroke_to_commit_p50_ms": 0.4500,
-  "L2_local_render.keystroke_to_commit_p99_ms": 22.9428,
-  "L2_local_render.keystroke_to_presented_60hz_min_ms": 16.6434,
-  "L2_local_render.keystroke_to_presented_60hz_p50_ms": 27.2984,
-  "L2_local_render.keystroke_to_presented_60hz_p99_ms": 55.0433,
-  "L2_local_render.malloc_bytes_per_keystroke": 116.8800,
-  "L2_local_render.presented_spread_p99_minus_p50_60hz_ms": 27.7449
+  "L2_local_render.first_keystroke_after_idle_max_ms": 50.6747,
+  "L2_local_render.first_keystroke_after_idle_p50_ms": 42.0130,
+  "L2_local_render.keystroke_to_commit_p50_ms": 0.5399,
+  "L2_local_render.keystroke_to_commit_p99_ms": 0.8132,
+  "L2_local_render.keystroke_to_presented_60hz_min_ms": 17.0670,
+  "L2_local_render.keystroke_to_presented_60hz_p50_ms": 25.7815,
+  "L2_local_render.keystroke_to_presented_60hz_p99_ms": 34.0552,
+  "L2_local_render.malloc_bytes_per_keystroke": -32.8800,
+  "L2_local_render.presented_spread_p99_minus_p50_60hz_ms": 8.2737
 }

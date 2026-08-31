@@ -123,6 +123,17 @@ enum SceneStates {
         let palette = seeded(peers: ["marlowe-air-1180"])
         palette.debugSetOverlay(.commands, query: "", files: [], selection: 0)
 
+        // §5.7's two status-line pickers. They are the same overlay mechanism
+        // as the other three, which is the whole reason a status segment could
+        // become a control without adding chrome — and they are seeded here so
+        // the ASCII dump and the pixels both show them, per §5.2's rule that a
+        // surface the tools cannot draw is a surface nobody reviews.
+        let language = seeded(peers: ["marlowe-air-1180"])
+        language.debugSetOverlay(.language, query: "", files: [], selection: 7)
+
+        let indent = seeded(peers: ["marlowe-air-1180"])
+        indent.debugSetOverlay(.indent, query: "", files: [], selection: 4)
+
         let pairing = seeded(peers: ["marlowe-air-1180"])
         pairing.debugSetPairing(host: true)
 
@@ -151,6 +162,8 @@ enum SceneStates {
             state("hover-rail", "hover — the pointer over a rail icon: the same two things, on a square tile",
                   hoverRail, hudSample(), phases: [.hover: 1, .hoverText: 1]),
             state("palette", "⇧⌘P — every command Beam has, from the same table the menu bar is built from", palette),
+            state("language", "the status line's language segment, clicked — the same list the lexer is built from", language),
+            state("indent", "the status line's indent segment, clicked — tabs or spaces, and how wide", indent),
             state("open", "⌘O — the open overlay over a scrimmed document: selection on the first row, hover on none", opening),
             state("peers", "⌘K — the same overlay listing peers; a number joins, which is §5.1's gesture one layer in", nearby),
             state("peers-alone", "⌘K — alone on the network: a designed state with its own words, not a blank list", noPeers),

@@ -68,8 +68,21 @@ extension GridView: NSTextInputClient {
             app.publishLocal(.newline, AppModel.editPayload(t0: inputT0 ?? monotonicNow()))
             changed(publishCaret: false)
         case "insertTab:", "insertBacktab:":
-            _ = doc.insert([0x09])
-            app.publishLocal(.insert, AppModel.editPayload(t0: inputT0 ?? monotonicNow(), [0x09]))
+            // **Tab inserts what the file already indents with** (PLAN.md
+            // §5.7). It used to always insert a literal tab, which in a
+            // space-indented file put an invisible mixed indent into somebody
+            // else's source on the first keystroke. The status line now says
+            // which it is, and the key agrees with what it says — a readout the
+            // editor's own behaviour contradicts is worse than no readout.
+            // Spaces advance to the next stop rather than inserting a fixed
+            // run, which is what a tab does and therefore what replacing one
+            // has to do.
+            let bytes: [UInt8] = doc.indentsWithTabs
+                ? [0x09]
+                : [UInt8](repeating: 0x20,
+                          count: doc.tabWidth - (doc.cellColumn(ofOffset: doc.caret) % doc.tabWidth))
+            _ = doc.insert(bytes)
+            app.publishLocal(.insert, AppModel.editPayload(t0: inputT0 ?? monotonicNow(), bytes))
             changed(publishCaret: false)
 
         // --- Deletion

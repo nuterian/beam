@@ -21,7 +21,17 @@ for i in 1 2 3 4 5; do
   # consecutive runs land. It is WindowServer/activation throttling, not the
   # display cycling and not the app. The pause costs the measurement nothing:
   # L1 is timed from process exec, so it starts after this sleep is over.
-  [ "$i" = 1 ] || sleep 1
+  #
+  # Raised 1 s -> 3 s (2026-08-30, §5.7 session). With a different app holding
+  # activation — the desktop Claude app rather than Terminal — 1 s stopped
+  # being enough and run 2 failed on every attempt: `window visible=false`,
+  # which is §5.1's finding that occlusionState only ever reports .visible for
+  # a window whose app has ACTIVATED. Measured directly: at a 1 s gap, run 2
+  # took 9.3 s and run 3 timed out; at 3 s, six consecutive runs landed in
+  # 220-336 ms. The gap is an environment accommodation and not a measurement
+  # knob — it is outside the timed window by construction, which is why it can
+  # be tuned without touching what the row means.
+  [ "$i" = 1 ] || sleep 3
   out=$("$BIN/beam" --bench-launch)
   l=$(echo "$out" | sed -n 's/launch_to_first_frame_ms=//p')
   t=$(echo "$out" | sed -n 's/launch_to_typeable_ms=//p')

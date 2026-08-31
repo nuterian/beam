@@ -51,13 +51,19 @@ enum Screenshot {
 
         // The typography this session is judged on, printed where it can be
         // read without opening a PNG.
-        print(String(format: "atlas: %@  cell %dx%d px  baseline %d  grid origin (%d, %d)",
-                     renderer.atlas.fontName, renderer.atlas.cellWidthPx, renderer.atlas.cellHeightPx,
-                     renderer.atlas.baselinePx, renderer.atlas.cellWidthPx,
-                     renderer.atlas.cellHeightPx / 2))
-
         let widthPx = Int(pointSize.width * scale)
         let heightPx = Int(pointSize.height * scale)
+        // The **actual** origin, asked of the same metrics the frame is laid
+        // out with. It used to print the constant `(cellWidth, cellHeight/2)`,
+        // which had been the origin two designs ago: it survived the centring
+        // fix in §5.4 and reported (18, 18) against a real origin of (26, 28).
+        // A diagnostic that is not derived from the thing it describes is a
+        // diagnostic that eventually describes something else.
+        print(String(format: "atlas: %@  cell %dx%d px  baseline %d  grid origin (%d, %d)",
+                     renderer.atlas.fontName, renderer.atlas.cellWidthPx, renderer.atlas.cellHeightPx,
+                     renderer.atlas.baselinePx,
+                     renderer.atlas.metrics.originX(forWidthPx: widthPx),
+                     renderer.atlas.metrics.originY(forHeightPx: heightPx)))
         // The same arithmetic GridView does on drawableSize, and the same grid
         // --dump-scene lays out on (SceneStates.referenceGrid).
         let cols = renderer.atlas.metrics.cols(forWidthPx: widthPx)

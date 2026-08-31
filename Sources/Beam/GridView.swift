@@ -545,8 +545,14 @@ final class GridView: NSView {
         let cellH = renderer.atlas.cellHeightPx
         let topLine = doc.scrollPx / cellH
         let subPx = doc.scrollPx % cellH
-        // A row scrolled up by subPx covers a click that lands subPx lower.
-        let visualRow = row - L.topRow + (subPx > cellH / 2 ? 1 : 0)
+        // **The same offset the document PLANE is drawn with** — the tab-strip
+        // inset minus the sub-cell scroll remainder (Scene.frame). The row you
+        // clicked is the row you *saw*, and after a pixel-quantized scroll or
+        // inside a sub-cell inset that is not the row the cell grid would name.
+        // Deriving it here from the same function that draws it is what stops
+        // the two from disagreeing by a third of a line.
+        let shiftPx = Scene.docTopGapPx(cellHeightPx: cellH) - subPx
+        let visualRow = row - L.topRow - Int((Double(shiftPx) / Double(cellH)).rounded())
         let line = min(max(0, topLine + visualRow), doc.buffer.lineCount - 1)
         let column = col - L.codeCol + doc.scrollXPx / max(1, renderer.atlas.cellWidthPx)
         return doc.offset(line: line, cellColumn: max(0, column))
@@ -610,6 +616,17 @@ final class GridView: NSView {
                 return
             }
             window?.performDrag(with: event)
+            return
+        }
+
+        // The status line's actionable segments (PLAN.md §5.7). Same hit-test
+        // the hover uses, so a segment that lights up is a segment that
+        // responds; a readout falls through and the press moves the window,
+        // which is what pressing chrome has always done.
+        if row == L.statusRow, app.doc.ioError == nil,
+           let i = Scene.statusSegment(atCol: col, app, L, limit: statusLimit(L)),
+           let action = Scene.statusSegments(app)[i].action {
+            app.openOverlay(action)
             return
         }
 
@@ -678,6 +695,15 @@ final class GridView: NSView {
     private var hoverSlot: Int { Int(Renderer.Ink.hover.rawValue) }
     private var hoverTextSlot: Int { Int(Renderer.Ink.hoverText.rawValue) }
 
+    /// Where the status line's left-hand run has to stop: the column the
+    /// latency readout begins at, less one gap. Hit-testing derives it from the
+    /// **same spans the frame is drawn with**, so a segment the window is too
+    /// narrow to show is also a segment that cannot be clicked.
+    private func statusLimit(_ layout: Scene.EditorLayout) -> Int {
+        Scene.hudStartCol(spans: Scene.presenceSpans(app, now: monotonicNow()) + hudSpans(),
+                          cols: layout.cols) - Scene.statusGap
+    }
+
     /// Which piece of chrome a cell belongs to, or nil for anything else —
     /// including every cell of the document.
     private func hoverTarget(atCol col: Int, row: Int) -> AppModel.HoverTarget? {
@@ -707,6 +733,15 @@ final class GridView: NSView {
                 if col >= plus, col < plus + Scene.newTabCols { found = .newTab }
             }
             return found
+        }
+        if row == L.statusRow, app.doc.ioError == nil {
+            // Only the segments that DO something answer here — `statusSegment`
+            // returns nil for a readout — so the pointer never lights up a fact
+            // you cannot change (PLAN.md §5.7).
+            if let i = Scene.statusSegment(atCol: col, app, L, limit: statusLimit(L)) {
+                return .status(i)
+            }
+            return nil
         }
         if col < L.railCols, row >= L.railTopRow {
             let i = Scene.railIndex(atRow: row, L)
@@ -742,6 +777,12 @@ final class GridView: NSView {
         } else if app.surface == .editor {
             areas.append(rect(cols: L.tabCol..<L.cols, rows: L.tabRow..<(L.tabRow + 1)))
             areas.append(rect(cols: 0..<L.railCols, rows: L.railTopRow..<L.statusRow))
+            // The status row's left-hand run. §5.7 made two of its segments
+            // clickable, and a target with no hover state is a target nobody
+            // discovers. The run is bounded by where the HUD begins, so the
+            // latency readout is not tracked: it is not a control and never
+            // becomes one.
+            areas.append(rect(cols: 0..<(L.cols / 2), rows: L.statusRow..<(L.statusRow + 1)))
         }
         for r in areas where r.width > 0 && r.height > 0 {
             addTrackingArea(NSTrackingArea(

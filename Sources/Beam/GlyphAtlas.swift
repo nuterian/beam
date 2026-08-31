@@ -49,12 +49,24 @@ final class GlyphAtlas {
     /// *visibly* missing is honest, and one that silently occupies no cell
     /// slides the rest of the line and is not.
     static let replacementGlyphIndex: UInt16 = 100
-    /// Rail icons, each **two cells wide** (PLAN.md §5.4, change 1). A cell is
-    /// 1:2, so an icon that is square — the only shape an icon can be — spans
-    /// two of them. The pair is drawn as one 36x36 path across two adjacent
-    /// atlas cells, which works because these indices are adjacent within a row.
-    static let filesIconIndex: UInt16 = 101      // and 102
-    static let peersIconIndex: UInt16 = 103      // and 104
+    /// Rail icons. A cell is 1:2, so a **square** icon — the only shape an icon
+    /// can be — spans `2k` cells across by `k` rows down. §5.4 took `k = 1`: a
+    /// 36x36 mark in two adjacent atlas cells.
+    ///
+    /// **§5.7 takes `k = 2`** — a 72x72 box across four cells and two rows, so
+    /// the icon inside it is set at ~26 pt against VS Code's ~24, instead of
+    /// the 18 pt `k = 1` allowed. There is no size in between: the ratio is
+    /// what makes an icon square at all, so the only sizes available are the
+    /// ones it admits, and 18 pt was the smaller of the two.
+    ///
+    /// Slots are the top-left cell of the block; the rest are `+1...+3` across
+    /// and `+atlasCols` down, which is why each icon needs a run of four free
+    /// slots in one row with four free beneath it. They start at a row boundary
+    /// (112 and 116 are row 7) so that stays true by inspection.
+    static let iconCols = 4
+    static let iconRows = 2
+    static let filesIconIndex: UInt16 = 112      // 112...115 + 128...131
+    static let peersIconIndex: UInt16 = 116      // 116...119 + 132...135
     /// The text caret: a thin vertical bar on the cell's left edge, full cell
     /// height. Distinct from `barGlyphIndex` (a peer's caret) because yours is
     /// an insertion point and theirs is a presence mark, and yours is the one
@@ -75,31 +87,51 @@ final class GlyphAtlas {
     /// First slot `GlyphCache` may assign. Everything below is static and is
     /// never evicted, so the chrome can never lose its own glyphs to a file
     /// full of mathematical symbols.
-    static let firstDynamicSlot = 109
-
-    /// Line height as a multiple of the em. Menlo's own box is 1.16 em and SF
-    /// Mono's 1.18 — typing-terminal tight. Beam's grid carries the overlays and
-    /// the join screen as well as code, so it is set to a designed 1.30: enough
-    /// air that a list reads as a list, still dense enough to be an editor. It is
-    /// a whole-pixel number after rounding, by construction.
     ///
-    /// **1.36 was tried against Zed's and VS Code's 1.4...1.5 and rejected.** At
-    /// the shipping em (28 px at 2x) it rounds to a 38 px cell against 36, which
-    /// on the screenshots bought a barely perceptible amount of air — the block
-    /// comment read marginally more like a paragraph — for 5.6% of the editing
-    /// rows on screen, the scarcest resource in the product. It also costs
-    /// something the number does not show: 1.30 is the value that makes the cell
-    /// exactly **18x36, a clean 1:2**, and §5.4's rail icons are square paths
-    /// drawn across *two* adjacent cells precisely because a cell is half a
-    /// square. At 18x38 a two-cell span is 36x38 and the only shape an icon can
-    /// be no longer fits its own box. A line-height change here is a geometry
-    /// change over in the chrome, and the air it buys is not worth it.
-    static let lineHeightEm: CGFloat = 1.30
+    /// §5.7's larger rail icons cost twelve slots, so the demand-filled pool
+    /// goes 147 -> 120. That is still far past what Latin source reaches (a
+    /// handful of non-ASCII characters per screen, usually none) and the
+    /// overflow is counted rather than hidden either way — see `GlyphCache`.
+    static let firstDynamicSlot = 136
+
+    /// Line height as a multiple of the em — **an output now, not an input**
+    /// (PLAN.md §5.7). `Metrics` derives the cell height as twice its width and
+    /// this reports what that came to, so the number a design conversation
+    /// wants is still available and can still be checked.
+    ///
+    /// The history is worth keeping, because it is the argument for the change.
+    /// Menlo's own box is 1.16 em and SF Mono's 1.18 — typing-terminal tight.
+    /// Beam's grid carries the overlays and the join screen as well as code, so
+    /// it was set to a designed **1.30**: enough air that a list reads as a
+    /// list, still dense enough to be an editor. **1.36 was tried against Zed's
+    /// and VS Code's 1.4...1.5 and rejected** — at the shipping em it rounds to
+    /// a 38 px cell against 36, which bought a barely perceptible amount of air
+    /// for 5.6% of the editing rows on screen, the scarcest resource in the
+    /// product.
+    ///
+    /// What that rejection *actually* turned on is the thing §5.7 promoted to a
+    /// rule: 1.30 is the value that makes the cell exactly 18x36, a clean 1:2,
+    /// and at 18x38 a two-cell span is 36x38 so the only shape an icon can be
+    /// no longer fits its own box. The ratio was doing the work; the line
+    /// height was how it happened to be reached. Derived, the implied value
+    /// ranges 1.25-1.33 across the zoom ladder — a narrower spread than the
+    /// decision this replaces — and lands on 1.286 at the shipping size, which
+    /// rounds to the same 36 px cell 1.30 always produced.
+    static func lineHeightEm(_ m: Metrics, pointSize: CGFloat) -> CGFloat {
+        CGFloat(m.cellHeightPx) / (pointSize * m.scale).rounded()
+    }
 
     /// The grid's metrics, computed from CoreText alone — no Metal, no window,
     /// no display. Split out so `--dump-scene` can lay out the shipping grid
     /// on a machine with no GPU context: the ASCII view and the pixels then
     /// describe the same layout by construction rather than by agreement.
+    /// **Where the window's traffic lights end**, in points, measured on a
+    /// `fullSizeContentView` window: device pixels x 20...140, y 25...50 at 2x
+    /// (PLAN.md §5.4). They are a fixed size in *device* pixels no matter what
+    /// Beam's own text is set at, which is why this is a point constant rather
+    /// than anything derived from the cell.
+    static let trafficLightsBottomPt: CGFloat = 25
+
     struct Metrics {
         let cellWidthPx: Int
         let cellHeightPx: Int
@@ -108,8 +140,10 @@ final class GlyphAtlas {
         /// or smeared.
         let baselinePx: Int
         let fontName: String
+        let scale: CGFloat
 
         init(pointSize: CGFloat, scale: CGFloat) {
+            self.scale = scale
             let em = (pointSize * scale).rounded()
             // SF Mono, the system's own monospace face — modern, native, and
             // shipped with every macOS 10.15+. It is only reachable through
@@ -146,13 +180,32 @@ final class GlyphAtlas {
             let descent = CTFontGetDescent(font)
             cellWidthPx = Int(ceil(max(advance.width, inkRight)))
 
-            // Line height is designed, then the baseline is centred inside it
-            // and rounded to a whole pixel — and then *checked against the real
-            // ink*, because ascent/descent are typographic promises, not
-            // measurements: SF Mono's deepest descender ('|', 6.60 px) falls
-            // outside its own 5.91 px descent, so a cell sized from the metrics
-            // alone clips it.
-            var height = Int((em * GlyphAtlas.lineHeightEm).rounded())
+            // **The cell is 1:2 by derivation** (PLAN.md §5.7). The height is
+            // twice the width, and the line height it implies is a checked
+            // consequence rather than the input it used to be.
+            //
+            // It used to be `em * lineHeightEm` with a designed 1.30, and at
+            // the shipping em that lands on exactly 36 against an 18 px width —
+            // 1:2 by luck. Every shape glyph in Beam is built on that: the rail
+            // icons are square paths drawn across *two adjacent cells* because
+            // a cell is half a square (§5.4), and the join code's block pixels
+            // are square as `2s` cells by `s` rows (§5.2), on the one screen
+            // where the security model is a human comparing digits. Measured
+            // across 9-24 pt, only four sizes keep 1:2 under the old rule — so
+            // a zoom control built on it would have broken the rail, the caret
+            // and the join code at nine steps in thirteen, silently, because
+            // nothing in the pipeline asserts the ratio.
+            //
+            // The ink guard below is unchanged and stays for the same reason it
+            // was written: ascent/descent are typographic promises, not
+            // measurements, and SF Mono's deepest descender ('|', 6.60 px)
+            // falls outside its own 5.91 px descent. Measured, it never binds
+            // for SF Mono between 9 and 24 pt — at 24 pt the ink wants 50 px
+            // and the derivation gives 60 — so 1:2 holds at every step rather
+            // than usually. It is a guard against the Menlo fallback and any
+            // face with a deeper descender, and it fails the safe way: by
+            // making a cell taller, never by clipping a glyph.
+            var height = 2 * cellWidthPx
             height = max(height, Int(ceil(inkAbove + inkBelow)))
             var baseline = Int((ascent + (CGFloat(height) - (ascent + descent)) / 2).rounded())
             baseline = max(baseline, Int(ceil(inkAbove)))
@@ -183,8 +236,38 @@ final class GlyphAtlas {
         func originX(forWidthPx w: Int) -> Int {
             max(0, (w - cols(forWidthPx: w) * cellWidthPx) / 2)
         }
+
+        /// **Vertically the remainder is no longer split, and that is a design
+        /// decision rather than a regression of the one above** (PLAN.md §5.7).
+        ///
+        /// Centring was right when both vertical edges were ground. They are
+        /// not any more: §5.4 put the **tab strip** on row 0 and the **status
+        /// band** on the last row, so both ends of the window are full-bleed
+        /// chrome. Splitting the remainder then buys nothing at the bottom —
+        /// the status band already overdraws past the last row it claims and
+        /// the GPU clips it — while at the top it deposits a strip of ground
+        /// *above* the tab strip that nothing chose: 28 device pixels of it at
+        /// the shipping size. §5.4 was already working around that strip rather
+        /// than owning it (the tab recess is laid under the tabs instead of
+        /// across the row, precisely so a full-width band would not leave a
+        /// lighter line along the top edge).
+        ///
+        /// So the top inset is **derived from the only thing that actually
+        /// constrains it**: row 0 has to contain the traffic lights, because
+        /// that is what "the tabs sit level with the lights" means in pixels.
+        /// It is the smallest inset for which the lights fit inside row 0, and
+        /// nothing more — 14 px at the shipping cell, against 28 before. The
+        /// rest of the remainder goes to the bottom, where the status band is
+        /// already built to absorb it.
+        ///
+        /// It behaves correctly under zoom for the same reason it is written
+        /// this way: the lights do not scale with Beam's text, so zooming in
+        /// past a 50 px cell drives the inset to 0 and the strip goes flush to
+        /// the top, and zooming out grows it so the lights never overlap the
+        /// first line of code.
         func originY(forHeightPx h: Int) -> Int {
-            max(0, (h - rows(forHeightPx: h) * cellHeightPx) / 2)
+            let lightsBottom = Int((GlyphAtlas.trafficLightsBottomPt * scale).rounded())
+            return max(0, min(lightsBottom - cellHeightPx, h - rows(forHeightPx: h) * cellHeightPx))
         }
     }
 
@@ -318,56 +401,83 @@ final class GlyphAtlas {
         ctx.stroke(CGRect(x: o.x + inset, y: (o.y + CGFloat(cellHeightPx - baselinePx)).rounded() + inset,
                           width: w - 2 * inset, height: CGFloat(baselinePx) - 2 * inset).insetBy(dx: stroke / 2, dy: stroke / 2))
 
-        // --- Rail icons. Each spans two cells, so the drawable box is square.
-        /// Bottom-left origin and size of a two-cell icon box.
+        // --- Rail icons (PLAN.md §5.7).
+        //
+        // **They are filled silhouettes now, not line drawings.** They were
+        // outlines at a 3 device-pixel stroke inside a 36 px box, and at that
+        // size a 3 px outline reads as dithering rather than as a mark: the one
+        // element in the window whose entire job is to be a target was the
+        // faintest thing in it. Weight, not size, was the larger half of that
+        // problem — but both are fixed here, because the box doubled to 72 px
+        // and an outline scaled up with it would have read as an outline twice
+        // as large rather than as a heavier mark.
+        //
+        // Detail inside a silhouette is **knocked out** rather than drawn: the
+        // atlas is one alpha channel, so clearing to zero shows whatever is
+        // behind the icon, which is the ground. That is how a filled mark gets
+        // interior structure without needing a second colour, and it is the
+        // same trick the old peers icon already used for its seam.
+        /// Bottom-left origin and size of an icon block: `iconCols` cells
+        /// across, `iconRows` rows down from `index`.
         func iconBox(_ index: Int) -> CGRect {
-            let o = cellOrigin(index)
-            return CGRect(x: o.x, y: o.y, width: w * 2, height: h)
+            let o = cellOrigin(index + Self.atlasCols * (Self.iconRows - 1))
+            return CGRect(x: o.x, y: o.y,
+                          width: w * CGFloat(Self.iconCols), height: h * CGFloat(Self.iconRows))
         }
-        ctx.setStrokeColor(CGColor(gray: 1, alpha: 1))
         ctx.setFillColor(CGColor(gray: 1, alpha: 1))
-        // **A rail icon's stroke is 1.5 points, not 1 device pixel.** At one
-        // device pixel a 36 px icon on a dark ground reads as dithering rather
-        // than as a drawn mark — it is below the weight the surrounding text is
-        // set at, so the one element in the window whose whole job is to be a
-        // target was the faintest thing in it.
-        let iconStroke = max(2, (scale * 1.5).rounded())
+        /// The mark inside its box. Not the full box: an icon that touched its
+        /// own edges would sit hard against the active tile behind it, and the
+        /// tile is what says "this is where you are".
+        let iconInk: CGFloat = 0.72
+        /// Knock-outs are a fixed fraction of the mark rather than a pixel
+        /// count, so they stay legible at every zoom step instead of closing up
+        /// at the small end and yawning open at the large one.
+        func knockOut(_ r: CGRect) {
+            ctx.setBlendMode(.clear)
+            ctx.fill(r)
+            ctx.setBlendMode(.normal)
+            ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+        }
 
-        // 101/102 — files: a page outline with three lines of text in it. A
-        // folded corner is illegible at this size; three strokes are not.
+        // files — a filled page, with three lines of text knocked out of it.
+        // The page is 3:4 and its corners are rounded against the SHAPE rather
+        // than against a stroke width: deriving the radius from a stroke is
+        // what once turned this into a capsule, which read as a battery.
         var box = iconBox(Int(Self.filesIconIndex))
-        // 3:4 with a small radius. At 0.46 wide and a radius of two strokes it
-        // came out a capsule — a battery, not a page — which is what happens
-        // when a corner radius is derived from the stroke instead of from the
-        // shape it is rounding.
-        let pageW = (box.width * 0.58).rounded(), pageH = (box.height * 0.74).rounded()
+        let mark = (box.height * iconInk).rounded()
+        let pageW = (mark * 0.78).rounded(), pageH = mark
         let page = CGRect(x: (box.midX - pageW / 2).rounded(), y: (box.midY - pageH / 2).rounded(),
                           width: pageW, height: pageH)
-        ctx.setLineWidth(iconStroke)
-        ctx.addPath(CGPath(roundedRect: page.insetBy(dx: iconStroke / 2, dy: iconStroke / 2),
-                           cornerWidth: scale * 1.5, cornerHeight: scale * 1.5, transform: nil))
-        ctx.strokePath()
-        for k in 1...3 {
-            let y = (page.minY + page.height * CGFloat(k) / 4).rounded()
-            ctx.fill(CGRect(x: (page.minX + pageW * 0.24).rounded(), y: y,
-                            width: (pageW * 0.52).rounded(), height: iconStroke))
+        ctx.beginPath()
+        ctx.addPath(CGPath(roundedRect: page, cornerWidth: (pageW * 0.14).rounded(),
+                           cornerHeight: (pageW * 0.14).rounded(), transform: nil))
+        ctx.fillPath()
+        // Three lines, the middle one full and the last one short — the ragged
+        // last line is what makes a stack of bars read as *text* rather than as
+        // a list or a barcode.
+        let lineH = (pageH * 0.09).rounded()
+        let lineX = (page.minX + pageW * 0.20).rounded()
+        for (k, frac) in [(1, 0.60), (2, 0.60), (3, 0.36)] {
+            let y = (page.minY + pageH * (0.72 - CGFloat(k - 1) * 0.20)).rounded()
+            knockOut(CGRect(x: lineX, y: y, width: (pageW * CGFloat(frac)).rounded(), height: lineH))
         }
 
-        // 103/104 — peers: two overlapping discs, the same metaphor the peer
-        // chip already uses, so the rail's language and the roster's agree.
+        // peers — two overlapping filled discs, the same metaphor the identity
+        // chip already uses, so the rail's language and the status line's agree
+        // (§5.2, the identity set).
         box = iconBox(Int(Self.peersIconIndex))
-        let r2 = (box.height * 0.26).rounded()
-        let back = CGRect(x: (box.midX - r2 * 1.9).rounded(), y: (box.midY - r2).rounded(),
+        let r2 = (box.height * iconInk * 0.34).rounded()
+        // The seam is a fraction of the disc, not a stroke width: at the old
+        // 1.4 px it was thinner than the ink around it and the two discs fused
+        // into one blob.
+        let seam = max(2, (r2 * 0.22).rounded())
+        let back = CGRect(x: (box.midX - r2 * 1.85).rounded(), y: (box.midY - r2).rounded(),
                           width: r2 * 2, height: r2 * 2)
-        let front = CGRect(x: (box.midX - r2 * 0.1).rounded(), y: (box.midY - r2).rounded(),
+        let front = CGRect(x: (box.midX - r2 * 0.15).rounded(), y: (box.midY - r2).rounded(),
                            width: r2 * 2, height: r2 * 2)
         ctx.fillEllipse(in: back)
-        // The front disc is knocked out of the back one so they read as two
-        // people rather than as one blob. The knock-out is the front disc grown
-        // by a whole stroke on every side: at the old 1.4 px the seam was
-        // thinner than the ink around it and the two discs fused.
         ctx.setBlendMode(.clear)
-        ctx.fillEllipse(in: front.insetBy(dx: -iconStroke, dy: -iconStroke))
+        ctx.fillEllipse(in: front.insetBy(dx: -seam, dy: -seam))
         ctx.setBlendMode(.normal)
         ctx.setFillColor(CGColor(gray: 1, alpha: 1))
         ctx.fillEllipse(in: front)

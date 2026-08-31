@@ -145,6 +145,18 @@ public struct Language {
         "select","time","return","local","export","readonly","declare","set","unset","echo","cd","exit"],
         lineComment: "#", blockOpen: "\u{0}", blockClose: "\u{0}", capitalsAreTypes: false)
 
+    /// **Every language Beam can highlight, in one list.** The status line's
+    /// language picker is built from it (PLAN.md §5.7), so a grammar that
+    /// exists can always be chosen and one that does not can never be offered —
+    /// the same "one table, two readers" rule the command palette and the menu
+    /// bar already share. `plain` is in it because turning highlighting off is
+    /// a choice a person is entitled to make.
+    public static let all: [Language] = [
+        .plain, .c, .go, .javascript, .json, .python, .rust, .shell, .swift,
+    ]
+
+    public static func named(_ name: String) -> Language? { all.first { $0.name == name } }
+
     /// By extension. A file Beam does not recognise gets `.plain`, which is not
     /// a fallback so much as the correct answer.
     public static func forPath(_ path: String) -> Language {
