@@ -4,153 +4,125 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Beam — a Mac code editor with a budget for every millisecond</title>
-<meta name="description" content="A native macOS code editor built benchmark-first. Every layer has a measured budget, every budget has a CI gate, and the numbers are published — including the ones we refuse to claim yet.">
+<meta name="description" content="A native macOS code editor built benchmark-first. Two draw calls. 0.41 ms from keystroke to committed frame. Every number published — including the ones we refuse to claim yet.">
 <link rel="icon" href="icon.png">
-<meta property="og:title" content="Beam — a Mac code editor with a budget for every millisecond">
-<meta property="og:description" content="Native Swift and Metal. Two draw calls. 0.4 ms from keystroke to committed frame. Every number published, including the ones we won't claim yet.">
+<meta property="og:title" content="Beam">
+<meta property="og:description" content="A Mac code editor with a budget for every millisecond.">
 <meta property="og:image" content="shots/editor.png">
 <meta property="og:type" content="website">
 <style>
   :root{
-    --ground:#0D1117; --raise:#131922; --surface:#181F29;
-    --fg:#EDEEF2; --dim:#9AA4B2; --faint:#6B7482;
-    --edge:#232B36; --edge-lit:#31C8C9;
-    --accent:#23C9FB; --green:#7FD88F; --amber:#F0C674;
+    --ground:#0D1117; --raise:#12171F; --edge:#1E2530;
+    --fg:#EDEEF2; --dim:#98A2B0; --faint:#666F7C;
+    --accent:#23C9FB; --amber:#F0C674;
     --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
     --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Helvetica,Arial,sans-serif;
-    --max:1120px;
   }
   *{box-sizing:border-box}
-  html{scroll-behavior:smooth}
+  html{scroll-behavior:smooth; -webkit-text-size-adjust:100%}
   body{
     margin:0; background:var(--ground); color:var(--fg);
-    font-family:var(--sans); font-size:17px; line-height:1.6;
-    -webkit-font-smoothing:antialiased;
+    font-family:var(--sans); font-size:18px; line-height:1.55;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
   }
   a{color:inherit}
-  .wrap{max-width:var(--max); margin:0 auto; padding:0 28px}
-  .rule{height:1px; background:var(--edge); border:0; margin:0}
+  img{max-width:100%; height:auto; display:block}
+  .wrap{max-width:1000px; margin:0 auto; padding:0 32px}
+  /* Screenshots break out past the text column: they are the product, and a
+     product shot indented to a paragraph's measure reads as an illustration. */
+  .bleed{max-width:1320px; margin:0 auto; padding:0 32px}
+  .narrow{max-width:760px}
 
   /* ---------- nav ---------- */
-  nav{
-    position:sticky; top:0; z-index:20; backdrop-filter:blur(14px);
-    background:color-mix(in srgb, var(--ground) 82%, transparent);
-    border-bottom:1px solid var(--edge);
-  }
-  nav .wrap{display:flex; align-items:center; gap:22px; height:60px}
-  .brand{display:flex; align-items:center; gap:10px; font-weight:600; letter-spacing:-.01em}
-  .brand img{width:24px; height:24px; border-radius:6px; display:block}
+  nav{position:sticky; top:0; z-index:20; background:rgba(13,17,23,.72); backdrop-filter:blur(16px)}
+  nav .wrap{display:flex; align-items:center; height:68px; gap:20px}
+  .brand{display:flex; align-items:center; gap:11px; font-weight:600; font-size:17px; letter-spacing:-.01em}
+  .brand img{width:26px; height:26px; border-radius:7px}
   nav .spacer{flex:1}
-  nav a.link{color:var(--dim); text-decoration:none; font-size:14.5px}
+  nav a.link{color:var(--dim); text-decoration:none; font-size:15px}
   nav a.link:hover{color:var(--fg)}
-  @media(max-width:720px){ nav a.link.hide-sm{display:none} }
 
   .btn{
     display:inline-flex; align-items:center; gap:9px; text-decoration:none;
-    background:var(--accent); color:#04121A; font-weight:650; font-size:15px;
-    padding:11px 18px; border-radius:9px; border:1px solid transparent;
-    transition:transform .12s ease, filter .12s ease;
+    background:var(--accent); color:#04121A; font-weight:640; font-size:16px;
+    padding:13px 22px; border-radius:10px; border:1px solid transparent;
+    transition:filter .13s ease, transform .13s ease; white-space:nowrap;
   }
-  .btn:hover{filter:brightness(1.08); transform:translateY(-1px)}
-  .btn.small{padding:8px 14px; font-size:14px}
-  .btn.ghost{background:transparent; color:var(--fg); border-color:var(--edge)}
-  .btn.ghost:hover{border-color:var(--dim); filter:none}
+  .btn:hover{filter:brightness(1.09); transform:translateY(-1px)}
+  .btn.sm{padding:9px 16px; font-size:14.5px; border-radius:8px}
+  .btn.ghost{background:transparent; color:var(--dim); border-color:var(--edge)}
+  .btn.ghost:hover{color:var(--fg); border-color:var(--faint); filter:none; transform:none}
 
   /* ---------- hero ---------- */
-  header{padding:88px 0 0; position:relative; overflow:hidden}
+  header{padding:130px 0 0; position:relative; overflow:hidden}
   header::before{
-    content:""; position:absolute; left:50%; top:-340px; width:1100px; height:640px;
+    content:""; position:absolute; left:50%; top:-420px; width:1200px; height:760px;
     transform:translateX(-50%);
-    background:radial-gradient(ellipse at center, rgba(35,201,251,.16), transparent 66%);
+    background:radial-gradient(ellipse at center, rgba(35,201,251,.13), transparent 68%);
     pointer-events:none;
   }
-  .eyebrow{
-    font-family:var(--mono); font-size:12.5px; letter-spacing:.10em; text-transform:uppercase;
-    color:var(--accent); margin:0 0 20px;
-  }
   h1{
-    font-size:clamp(38px,6.2vw,66px); line-height:1.05; letter-spacing:-.032em;
-    margin:0 0 22px; font-weight:680; max-width:16ch;
+    font-size:clamp(46px,8.4vw,92px); line-height:.98; letter-spacing:-.042em;
+    font-weight:700; margin:0 0 30px; max-width:13ch;
   }
-  h1 em{font-style:normal; color:var(--accent)}
-  .lede{font-size:clamp(17px,2.1vw,20.5px); color:var(--dim); max-width:60ch; margin:0 0 34px}
-  .cta{display:flex; flex-wrap:wrap; gap:13px; align-items:center}
-  .cta .note{font-family:var(--mono); font-size:12.5px; color:var(--faint)}
+  h1 span{color:var(--accent)}
+  .lede{font-size:clamp(18px,2.3vw,23px); line-height:1.5; color:var(--dim); max-width:44ch; margin:0 0 40px}
+  .cta{display:flex; flex-wrap:wrap; gap:14px; align-items:center}
+  .cta .meta{font-family:var(--mono); font-size:13px; color:var(--faint)}
 
+  /* ---------- shots ---------- */
   .shot{
-    margin:60px auto 0; border:1px solid var(--edge); border-radius:14px; overflow:hidden;
-    background:var(--ground); box-shadow:0 34px 90px -30px rgba(0,0,0,.9), 0 0 0 1px rgba(255,255,255,.02);
-    position:relative;
+    border:1px solid var(--edge); border-radius:16px; overflow:hidden; background:#000;
+    box-shadow:0 40px 110px -34px rgba(0,0,0,.95);
   }
-  .shot img{display:block; width:100%; height:auto}
-  .cap{
-    font-family:var(--mono); font-size:12.5px; color:var(--faint);
-    margin:14px 2px 0; text-align:center;
-  }
+  .hero-shot{margin-top:84px}
 
-  /* ---------- instrument panel ---------- */
-  section{padding:96px 0}
-  h2{font-size:clamp(27px,3.6vw,38px); line-height:1.15; letter-spacing:-.024em; margin:0 0 16px; font-weight:660}
-  .sub{color:var(--dim); max-width:64ch; margin:0 0 44px; font-size:17.5px}
+  /* ---------- numbers ---------- */
+  .numbers{
+    display:grid; grid-template-columns:repeat(4,1fr); gap:48px 40px;
+    padding:130px 0 0;
+  }
+  .num .v{
+    font-family:var(--mono); font-size:clamp(34px,4.6vw,50px); line-height:1;
+    letter-spacing:-.035em; color:var(--fg); font-weight:500;
+  }
+  .num .v i{font-style:normal; font-size:.44em; color:var(--faint); margin-left:4px; letter-spacing:0}
+  .num .k{font-size:15px; color:var(--dim); margin-top:14px; line-height:1.4}
+  @media(max-width:820px){ .numbers{grid-template-columns:repeat(2,1fr); gap:40px 28px} }
 
-  .metrics{
-    display:grid; grid-template-columns:repeat(auto-fit,minmax(212px,1fr)); gap:1px;
-    background:var(--edge); border:1px solid var(--edge); border-radius:13px; overflow:hidden;
+  /* ---------- sections ---------- */
+  section{padding:130px 0}
+  .kicker{
+    font-family:var(--mono); font-size:12.5px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 22px;
   }
-  .metric{background:var(--raise); padding:22px 20px}
-  .metric .v{font-family:var(--mono); font-size:26px; letter-spacing:-.02em; color:var(--fg)}
-  .metric .v .u{font-size:14px; color:var(--faint); margin-left:3px}
-  .metric .k{font-size:13.5px; color:var(--dim); margin-top:7px; line-height:1.45}
-  .metric .b{font-family:var(--mono); font-size:11.5px; color:var(--faint); margin-top:9px}
-  .metric.hero-m .v{color:var(--accent)}
+  h2{font-size:clamp(30px,4.6vw,46px); line-height:1.1; letter-spacing:-.032em; font-weight:680; margin:0 0 22px}
+  .say{font-size:19px; color:var(--dim); max-width:56ch; margin:0}
+  .say + .shot{margin-top:56px}
+  .say b{color:var(--fg); font-weight:600}
+  .keys{font-family:var(--mono); font-size:13.5px; color:var(--faint); margin:22px 0 0}
 
-  /* ---------- features ---------- */
-  .feature{display:grid; grid-template-columns:1fr 1fr; gap:56px; align-items:center; margin-top:84px}
-  .feature:first-of-type{margin-top:0}
-  .feature.flip .txt{order:2}
-  .feature h3{font-size:23px; margin:0 0 13px; letter-spacing:-.018em; font-weight:640}
-  .feature p{color:var(--dim); margin:0 0 14px}
-  .feature .kbd{font-family:var(--mono); font-size:12.5px; color:var(--faint)}
-  .feature .shot{margin:0}
-  @media(max-width:880px){
-    .feature{grid-template-columns:1fr; gap:26px}
-    .feature.flip .txt{order:0}
-  }
+  .block + .block{margin-top:130px}
 
-  kbd{
-    font-family:var(--mono); font-size:12px; background:var(--surface); color:var(--fg);
-    border:1px solid var(--edge); border-radius:5px; padding:2px 6px; white-space:nowrap;
-  }
-
-  /* ---------- honesty ---------- */
-  .honest{border:1px solid var(--edge); border-radius:13px; background:var(--raise); padding:34px 32px}
-  .honest h2{margin-bottom:12px}
-  .honest ul{list-style:none; padding:0; margin:26px 0 0}
-  .honest li{
-    padding:16px 0 16px 26px; border-top:1px solid var(--edge); position:relative;
-    color:var(--dim); font-size:16px;
-  }
-  .honest li:first-child{border-top:0}
-  .honest li::before{
-    content:""; position:absolute; left:0; top:24px; width:9px; height:9px; border-radius:2px;
-    background:var(--amber);
-  }
+  /* ---------- honest ---------- */
+  .honest{padding:130px 0; border-top:1px solid var(--edge)}
+  .honest ul{list-style:none; padding:0; margin:44px 0 0; max-width:70ch}
+  .honest li{padding:22px 0 22px 30px; border-bottom:1px solid var(--edge); position:relative; color:var(--dim); font-size:17px}
+  .honest li::before{content:""; position:absolute; left:0; top:31px; width:10px; height:10px; border-radius:2px; background:var(--amber)}
   .honest li b{color:var(--fg); font-weight:620}
 
-  /* ---------- install ---------- */
-  .steps{display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:22px; margin-top:36px}
-  .step{border:1px solid var(--edge); border-radius:12px; padding:24px; background:var(--raise)}
-  .step .n{font-family:var(--mono); font-size:12px; color:var(--accent); letter-spacing:.09em}
-  .step h4{margin:12px 0 9px; font-size:17px; font-weight:620}
-  .step p{margin:0; color:var(--dim); font-size:15px}
-
-  pre{
-    font-family:var(--mono); font-size:13.5px; background:var(--raise); color:var(--dim);
-    border:1px solid var(--edge); border-radius:10px; padding:16px 18px; overflow-x:auto; margin:22px 0 0;
+  /* ---------- download ---------- */
+  .get{padding:130px 0; text-align:center; border-top:1px solid var(--edge)}
+  .get h2{max-width:none}
+  .get .say{margin:0 auto; text-align:center}
+  .get .cta{justify-content:center; margin-top:36px}
+  .first-run{
+    font-size:15px; color:var(--faint); max-width:52ch; margin:34px auto 0; line-height:1.6;
   }
+  .first-run b{color:var(--dim); font-weight:600}
 
-  footer{border-top:1px solid var(--edge); padding:48px 0 72px; color:var(--faint); font-size:14.5px}
-  footer .wrap{display:flex; flex-wrap:wrap; gap:18px; align-items:center}
+  footer{border-top:1px solid var(--edge); padding:44px 0 70px; font-size:15px}
+  footer .wrap{display:flex; flex-wrap:wrap; gap:22px; align-items:center; color:var(--faint)}
   footer a{color:var(--dim); text-decoration:none}
   footer a:hover{color:var(--fg)}
   footer .spacer{flex:1}
@@ -162,323 +134,129 @@
   <div class="wrap">
     <span class="brand"><img src="icon.png" alt="">Beam</span>
     <span class="spacer"></span>
-    <a class="link hide-sm" href="#numbers">Numbers</a>
-    <a class="link hide-sm" href="#editor">Editor</a>
-    <a class="link hide-sm" href="#honest">What it isn't</a>
     <a class="link" href="https://github.com/nuterian/beam">GitHub</a>
-    <a class="btn small" href="https://github.com/nuterian/beam/releases/latest/download/Beam.dmg">Download</a>
+    <a class="btn sm" href="https://github.com/nuterian/beam/releases/latest/download/Beam.dmg">Download</a>
   </div>
 </nav>
 
 <header>
   <div class="wrap">
-    <p class="eyebrow">Native macOS · Swift + Metal</p>
-    <h1>A code editor with a budget for <em>every millisecond</em>.</h1>
+    <h1>A budget for <span>every millisecond</span>.</h1>
     <p class="lede">
-      Beam is built benchmark-first. Every layer has a measured budget, every budget has a
-      CI gate, and no feature is written before the benchmark that measures it has been
-      proven to fail. The numbers below are the product — and so is the list of the ones
-      we refuse to claim yet.
+      A native Mac code editor where every layer has a measured budget and every
+      budget has a gate that fails the build.
     </p>
     <div class="cta">
-      <a class="btn" href="https://github.com/nuterian/beam/releases/latest/download/Beam.dmg">
-        Download for macOS
-      </a>
-      <a class="btn ghost" href="https://github.com/nuterian/beam/blob/main/PLAN.md">Read the plan</a>
-      <span class="note">Apple silicon · macOS 14+ · ~1&nbsp;MB · unsigned build</span>
+      <a class="btn" href="https://github.com/nuterian/beam/releases/latest/download/Beam.dmg">Download for macOS</a>
+      <a class="btn ghost" href="https://github.com/nuterian/beam">Source</a>
+      <span class="meta">Apple silicon · macOS 14+ · 1 MB</span>
     </div>
+  </div>
 
-    <div class="shot">
-      <img src="shots/editor.png" alt="Beam editing a Rust file: document tabs in the traffic-light band, an icon rail on the left, line numbers, a selection, and a status line carrying live latency.">
+  <div class="bleed">
+    <div class="shot hero-shot">
+      <img src="shots/editor.png" width="1960" height="1280"
+           alt="Beam editing a Rust file: document tabs in the traffic-light band, an icon rail on the left, syntax-highlighted code, a selection, and a status line carrying live latency.">
     </div>
-    <p class="cap">Every pixel inside the window is drawn from one glyph atlas. There is no AppKit control in there.</p>
+  </div>
+
+  <div class="wrap">
+    <div class="numbers">
+      <div class="num"><div class="v">0.41<i>ms</i></div><div class="k">Keystroke to committed frame</div></div>
+      <div class="num"><div class="v">2</div><div class="k">Draw calls for the whole interface</div></div>
+      <div class="num"><div class="v">0.012<i>%</i></div><div class="k">Of one core, idle</div></div>
+      <div class="num"><div class="v">1.0<i>MB</i></div><div class="k">The entire application</div></div>
+    </div>
   </div>
 </header>
 
-<section id="numbers">
+<section>
   <div class="wrap">
-    <h2>The instrument panel</h2>
-    <p class="sub">
-      Measured on the development machine — an M4 MacBook Air, 60&nbsp;Hz internal display —
-      by the benchmarks in the repository, and judged against
-      <code style="font-family:var(--mono);font-size:14px;color:var(--dim)">perf/budgets.json</code>
-      by the same gate that runs in CI. Percentiles, never averages.
+    <p class="kicker">Find</p>
+    <h2>No bar. No panel.</h2>
+    <p class="say">
+      The query goes on the status line. Every match on screen fills, and the current one
+      <b>is the selection</b> — so typing over it, copying it and deleting it already work.
+      Nothing is laid over the document, which is the entire point of highlighting it.
     </p>
-
-    <div class="metrics">
-      <div class="metric hero-m">
-        <div class="v">0.41<span class="u">ms</span></div>
-        <div class="k">Keystroke → command buffer committed, p50</div>
-        <div class="b">budget 4 · gate 6</div>
-      </div>
-      <div class="metric hero-m">
-        <div class="v">2</div>
-        <div class="k">Draw calls per frame — the whole interface</div>
-        <div class="b">budget 2 · gate 4</div>
-      </div>
-      <div class="metric hero-m">
-        <div class="v">0.012<span class="u">%</span></div>
-        <div class="k">Idle CPU, of one core, window in front</div>
-        <div class="b">budget 0.1 · gate 0.5</div>
-      </div>
-      <div class="metric">
-        <div class="v">−4<span class="u">B</span></div>
-        <div class="k">Net allocations per keystroke</div>
-        <div class="b">design target 0</div>
-      </div>
-      <div class="metric">
-        <div class="v">26.0<span class="u">ms</span></div>
-        <div class="k">Keystroke → pixels on a 60 Hz panel, p50</div>
-        <div class="b">≈17 ms of it is present-path depth we have not cut yet</div>
-      </div>
-      <div class="metric">
-        <div class="v">293<span class="u">ms</span></div>
-        <div class="k">Launch → a document you can type in</div>
-        <div class="b">budget 300 · gate 500</div>
-      </div>
-      <div class="metric">
-        <div class="v">12.8<span class="u">ms</span></div>
-        <div class="k">Open a 1 MB source file → first line on screen</div>
-        <div class="b">budget 60 · gate 120</div>
-      </div>
-      <div class="metric">
-        <div class="v">0.33<span class="u">µs</span></div>
-        <div class="k">One undo with 10,000 records on the stack</div>
-        <div class="b">budget 200 · gate 1000</div>
-      </div>
-      <div class="metric">
-        <div class="v">65.5<span class="u">MB</span></div>
-        <div class="k">Resident memory at rest</div>
-        <div class="b">budget 80 · gate 120</div>
-      </div>
-      <div class="metric">
-        <div class="v">1.0<span class="u">MB</span></div>
-        <div class="k">Binary size, 36 linked libraries</div>
-        <div class="b">budget 5 MB · gate 10 MB</div>
-      </div>
-      <div class="metric">
-        <div class="v">2.1<span class="u">µs</span></div>
-        <div class="k">Syntax-lexing one line of real source</div>
-        <div class="b">budget 20 · gate 60</div>
-      </div>
-      <div class="metric">
-        <div class="v">30<span class="u">B</span></div>
-        <div class="k">Bytes on the wire per shared keystroke</div>
-        <div class="b">budget 48 · gate 64</div>
-      </div>
-    </div>
-
-    <pre>$ scripts/gate.sh          # every bench, then the gate judges perf/results/ against perf/budgets.json
-$ scripts/check.sh         # the fast loop: build, correctness, every surface, every screenshot — under a minute</pre>
+    <p class="keys">⌘F find · ⌘G / ⇧⌘G next, previous · esc done</p>
   </div>
-</section>
-
-<hr class="rule">
-
-<section id="editor">
-  <div class="wrap">
-    <h2>It is an editor first</h2>
-    <p class="sub">
-      Beam removes chrome, not capability. There is no sidebar, no toolbar, no title bar and
-      no tab bar of its own — the document tabs sit in the band the traffic lights already
-      occupied, so the chrome costs zero editing rows.
-    </p>
-
-    <div class="feature">
-      <div class="txt">
-        <h3>Find, without a bar</h3>
-        <p>
-          The query goes on the status line Beam already had. Every visible match fills, the
-          current one is the selection — so typing over it, copying it and deleting it all
-          work with no new keys to learn — and the count sits beside the query, because
-          “3 of 47” is part of the answer.
-        </p>
-        <p>
-          Nothing is laid over the document. A find bar spends its whole existence trying to
-          get back to that and cannot, because it is a bar.
-        </p>
-        <p class="kbd"><kbd>⌘F</kbd> find · <kbd>⌘G</kbd> / <kbd>⇧⌘G</kbd> next, previous · <kbd>esc</kbd> done</p>
-      </div>
-      <div class="shot"><img src="shots/find.png" alt="Beam with find open: the query and match count on the status line, four matches highlighted in the document, the current one selected."></div>
-    </div>
-
-    <div class="feature flip">
-      <div class="txt">
-        <h3>Every command, in one table</h3>
-        <p>
-          The system menu bar, the command palette and the keyboard are three views of a
-          single table. A command cannot exist in one and not the others, or carry two
-          different shortcuts. The menu bar lives outside the window, so it costs no window
-          pixels and no draw call.
-        </p>
-        <p class="kbd"><kbd>⇧⌘P</kbd> command palette</p>
-      </div>
-      <div class="shot"><img src="shots/palette.png" alt="Beam's command palette: a centred panel over a dimmed document, listing every command with its key equivalent right-aligned."></div>
-    </div>
-
-    <div class="feature">
-      <div class="txt">
-        <h3>A file finder that exists only while you are finding</h3>
-        <p>
-          A file tree pinned to an edge is chrome — it spends a quarter of the window on
-          navigation you do a few times an hour. A fuzzy finder is not: it costs zero pixels
-          when you are not using it, and it is drawn from the same glyph atlas as everything
-          else, so its per-keystroke filter is budgeted and gated like any other input.
-        </p>
-        <p class="kbd"><kbd>⌘O</kbd> open · <kbd>⌘S</kbd> save · <kbd>⌘W</kbd> close tab</p>
-      </div>
-      <div class="shot"><img src="shots/open.png" alt="Beam's open overlay: a query row, a rule, and matching file paths over a dimmed document."></div>
-    </div>
-
-    <div class="feature flip">
-      <div class="txt">
-        <h3>It will not lose your work</h3>
-        <p>
-          Closing a modified tab asks first. So does quitting. And if something else wrote the
-          file while you had unsaved edits — a <code style="font-family:var(--mono);font-size:14px">git checkout</code>,
-          a formatter, another editor — the save stops and asks, because an atomic write only
-          means it cannot be torn.
-        </p>
-        <p>
-          The first answer offered is always <em>keep both</em>. It is the only resolution that
-          cannot lose anything, and a conflict is exactly the moment when you do not yet know
-          which version you want.
-        </p>
-      </div>
-      <div class="shot"><img src="shots/closing.png" alt="Beam asking whether to save changes before closing a tab: the question and two numbered answers, drawn in the editor's own grid."></div>
+  <div class="bleed">
+    <div class="shot" style="margin-top:52px">
+      <img src="shots/find.png" width="1960" height="1280" loading="lazy"
+           alt="Beam with find open: the query and a match count on the status line, four matches filled in the document, the current one selected.">
     </div>
   </div>
 </section>
 
-<hr class="rule">
-
-<section id="lan">
+<section>
   <div class="wrap">
-    <h2>Two people, one network, no cloud</h2>
-    <p class="sub">
-      Beam finds other Beams on your LAN over Bonjour and pairs in one gesture: an X25519 key
-      agreement produces six digits on both screens, one person compares them and confirms, and
-      the session is ChaChaPoly-encrypted from the first byte. No accounts, no certificates, no
-      server. Nothing leaves the network — it works air-gapped.
+    <p class="kicker">Chrome</p>
+    <h2>Removed, not hidden.</h2>
+    <p class="say">
+      No sidebar, no toolbar, no title bar. Tabs sit in the band the traffic lights already
+      occupied, so the chrome costs <b>zero editing rows</b>, and the menus live outside the
+      window entirely. Every pixel inside it is drawn from one glyph atlas — there is no
+      AppKit control in there.
     </p>
-
-    <div class="feature">
-      <div class="txt">
-        <h3>The six digits are the security model</h3>
-        <p>
-          An ephemeral key agreement is free confidentiality against a passive listener and wide
-          open to an active machine-in-the-middle. The digits are derived from <em>both</em>
-          public keys, so an attacker cannot make both screens agree — a human comparing them is
-          the authentication. That is the same bargain as Bluetooth numeric comparison, and it is
-          why the code is set large enough to read across a desk.
-        </p>
-        <p class="kbd">measured: gesture → digits on both screens <b style="color:var(--dim)">48.7 ms</b> · handshake crypto <b style="color:var(--dim)">0.16 ms</b></p>
-      </div>
-      <div class="shot"><img src="shots/pairing.png" alt="Beam's join screen: a six-digit verification code set as block pixels, grouped three and three, filling the window."></div>
-    </div>
-
-    <div class="feature flip">
-      <div class="txt">
-        <h3>Presence lives on the status line</h3>
-        <p>
-          Beam launches into a document, not a list of machines. Whoever is nearby appears as a
-          coloured chip on the status line while you work, each peer's live round-trip time
-          beside it. The six peer colours share an identical perceived lightness and differ only
-          in hue, so they read as one set and no collaborator is louder than another.
-        </p>
-        <p class="kbd"><kbd>⌘K</kbd> who's nearby</p>
-      </div>
-      <div class="shot"><img src="shots/peers.png" alt="Beam's peer overlay listing three nearby machines, each with a coloured chip and a number key that joins it."></div>
+    <p class="keys">⇧⌘P command palette · ⌘O open · ⌘K who's nearby</p>
+  </div>
+  <div class="bleed">
+    <div class="shot" style="margin-top:52px">
+      <img src="shots/palette.png" width="1960" height="1280" loading="lazy"
+           alt="Beam's command palette: a centred panel over a dimmed document, every command with its key equivalent right-aligned.">
     </div>
   </div>
 </section>
 
-<hr class="rule">
-
-<section id="honest">
+<section>
   <div class="wrap">
-    <div class="honest">
-      <h2>What Beam is not, yet</h2>
-      <p class="sub" style="margin-bottom:0">
-        A project whose entire thesis is measurement honesty does not get to be vague on its own
-        landing page. Everything below is a real limitation of the current build.
-      </p>
-      <ul>
-        <li>
-          <b>Collaborative editing is early, and it is not a CRDT.</b> Today two peers share a
-          grid with last-writer-wins on a cell. Two people typing in the same place at the same
-          moment will diverge. The CRDT is the next phase of work and its budgets are already
-          written; until it lands, treat sharing as a demo, not as something to trust with work.
-        </li>
-        <li>
-          <b>No photon numbers are claimed.</b> Software measures “presented”, not photons. The
-          camera-calibration constant that would turn one into the other is unset, so every
-          latency figure on this page is a software timestamp and is labelled as one.
-        </li>
-        <li>
-          <b>Every collaboration number is loopback.</b> Two processes on one machine, not two
-          machines on a switch. Loopback is a software floor, not a LAN measurement, and it never
-          substitutes for one.
-        </li>
-        <li>
-          <b>The numbers are 60 Hz.</b> The development machine is a 60 Hz panel. Roughly 17 ms of
-          the 26 ms keystroke-to-pixels figure is one frame of present-path depth that has not
-          been cut yet — that work, and ProMotion, are the headline objective and are not done.
-        </li>
-        <li>
-          <b>The build is unsigned.</b> Ad-hoc signed, not notarized, so macOS will warn you the
-          first time. Instructions are below; if that is not a trade you want to make, build it
-          yourself from source.
-        </li>
-        <li>
-          <b>Latin, LTR, monospace, one cell per character.</b> Bidi, East Asian width and
-          accessibility are named, planned gaps rather than oversights. IME is implemented but
-          not yet covered by a benchmark. There is no soft wrap and no regex search.
-        </li>
-      </ul>
+    <p class="kicker">Together</p>
+    <h2>One network. No cloud.</h2>
+    <p class="say">
+      Beam finds other Beams over Bonjour and pairs in one gesture. Six digits appear on both
+      screens, <b>a human compares them</b>, and the session is encrypted from the first byte.
+      No accounts, no certificates, no server — it works air-gapped.
+    </p>
+    <p class="keys">measured: gesture → digits on both screens 48.7 ms · handshake 0.16 ms</p>
+  </div>
+  <div class="bleed">
+    <div class="shot" style="margin-top:52px">
+      <img src="shots/pairing.png" width="1960" height="1280" loading="lazy"
+           alt="Beam's join screen: a six-digit verification code set as large block pixels, grouped three and three.">
     </div>
   </div>
 </section>
 
-<hr class="rule">
-
-<section id="install">
+<div class="honest" id="honest">
   <div class="wrap">
-    <h2>Install</h2>
-    <p class="sub">
-      Every push to <code style="font-family:var(--mono);font-size:14px">main</code> builds, packages
-      and publishes the disk image below, so the link is always the newest build.
-    </p>
+    <p class="kicker">Honestly</p>
+    <h2>What Beam is not, yet.</h2>
+    <p class="say">A project about measurement does not get to be vague about its own state.</p>
+    <ul>
+      <li><b>Sharing is not a CRDT.</b> Two peers share a grid with last-writer-wins on a cell, so typing in the same place at the same moment diverges. Treat it as a demo.</li>
+      <li><b>No photon numbers are claimed.</b> Software measures “presented”, not photons, and the camera calibration does not exist yet. Every figure here is a software timestamp.</li>
+      <li><b>Collaboration numbers are loopback.</b> Two processes on one machine — a software floor, never a LAN measurement.</li>
+      <li><b>Keystroke to pixels is 26 ms on a 60 Hz panel</b>, and about 17 ms of that is present-path depth not yet cut. That work is open, and so is ProMotion.</li>
+      <li><b>The build is unsigned</b>, and it is Latin, LTR and monospace. No soft wrap, no regex search.</li>
+    </ul>
+  </div>
+</div>
 
+<div class="get">
+  <div class="wrap">
+    <h2>Try it.</h2>
+    <p class="say">Rebuilt and republished from <code style="font-family:var(--mono);font-size:16px">main</code> on every push.</p>
     <div class="cta">
       <a class="btn" href="https://github.com/nuterian/beam/releases/latest/download/Beam.dmg">Download Beam.dmg</a>
-      <a class="btn ghost" href="https://github.com/nuterian/beam/releases">All releases</a>
+      <a class="btn ghost" href="https://github.com/nuterian/beam/blob/main/PLAN.md">Read the plan</a>
     </div>
-
-    <div class="steps">
-      <div class="step">
-        <div class="n">01</div>
-        <h4>Open the disk image</h4>
-        <p>Drag <b style="color:var(--fg)">Beam</b> onto the Applications shortcut inside it, then eject.</p>
-      </div>
-      <div class="step">
-        <div class="n">02</div>
-        <h4>Right-click → Open</h4>
-        <p>The build is unsigned, so the first launch needs this once. Double-clicking will be refused; right-click (or Control-click) the app and choose Open, then confirm.</p>
-      </div>
-      <div class="step">
-        <div class="n">03</div>
-        <h4>Allow local network</h4>
-        <p>Only if you want to see other Beams nearby. Decline it and the editor works exactly the same, alone.</p>
-      </div>
-    </div>
-
-    <pre># or build it yourself — no Xcode project, no dependencies
-git clone https://github.com/nuterian/beam &amp;&amp; cd beam
-scripts/build.sh           # release build → .build/bin
-scripts/package_app.sh     # → dist/Beam.app and dist/Beam.dmg</pre>
+    <p class="first-run">
+      Drag Beam onto Applications. The build is unsigned, so the first launch has to be
+      <b>right-click → Open</b> rather than a double-click. Once only.
+    </p>
   </div>
-</section>
+</div>
 
 <footer>
   <div class="wrap">
