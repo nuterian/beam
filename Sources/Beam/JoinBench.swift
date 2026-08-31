@@ -160,27 +160,51 @@ final class JoinBench {
         app.onSessionOp = { [weak self] inbound in self?.hostMark(inbound) }
     }
 
-    /// The gesture itself: a real key event through the real window event path,
-    /// exactly as `--bench-typing` does. Pressing a peer's number and clicking
-    /// its row land in the same `AppModel.join(peerIndex:)`.
+    /// The gesture itself: real key events through the real window event path,
+    /// exactly as `--bench-typing` does.
+    ///
+    /// **What "the gesture" is, after PLAN.md §5.3.** §5.1's whole join UI was
+    /// "a number or a click" on a roster that was the launch screen. Beam now
+    /// launches into a document, so reaching the peer list is `⌘K` and choosing
+    /// a peer is still its number. The metric starts at the **number**, not at
+    /// `⌘K`: opening a list is navigation, and the time a human spends looking
+    /// at it is not ours to budget — the same argument the auto-confirm in
+    /// `join_gesture_to_first_shared_keystroke_ms` already makes. From the
+    /// instant you commit to a peer, every millisecond is still counted.
     private func makeGesture() {
         guard gestureAt == nil else { return }
         // Browse results can momentarily go empty as Bonjour republishes; the
-        // gesture is only meaningful with a peer actually on the roster.
+        // gesture is only meaningful with a peer actually discovered.
         guard !app.peers.isEmpty else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.makeGesture() }
             return
         }
         stage = "joining"
-        let t = ProcessInfo.processInfo.systemUptime
-        gestureAt = t
+        send(characters: "k", keyCode: 40, command: true)   // ⌘K — open the peer list
+        guard app.overlay == .peers, !app.overlayItems.isEmpty else {
+            fail("⌘K did not open a peer list (overlay=\(String(describing: app.overlay)), items=\(app.overlayItems.count))")
+        }
+        progress("peer list open")
+        // Next runloop turn, so the number is a separate event with its own
+        // timestamp and the measurement starts exactly where it says it does.
+        DispatchQueue.main.async {
+            let t = ProcessInfo.processInfo.systemUptime
+            self.gestureAt = t
+            self.send(characters: "1", keyCode: 18, timestamp: t)
+            self.progress("gesture sent")
+        }
+    }
+
+    private func send(characters: String, keyCode: UInt16, command: Bool = false,
+                      timestamp: Double? = nil) {
         guard let event = NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: [], timestamp: t,
+            with: .keyDown, location: .zero, modifierFlags: command ? [.command] : [],
+            timestamp: timestamp ?? ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber, context: nil,
-            characters: "1", charactersIgnoringModifiers: "1", isARepeat: false, keyCode: 18
-        ) else { fail("cannot synthesize the join gesture") }
+            characters: characters, charactersIgnoringModifiers: characters,
+            isARepeat: false, keyCode: keyCode
+        ) else { fail("cannot synthesize a key event") }
         window.sendEvent(event)
-        progress("gesture sent")
     }
 
     private func hostMark(_ inbound: Session.Inbound) {

@@ -23,11 +23,11 @@ final class Session {
         case insert = 0x01      // [u8 ascii]
         case newline = 0x02
         case backspace = 0x03
-        case cursor = 0x04      // [u16 col][u16 row]
+        case cursor = 0x04      // [u32 caret byte offset]
         case ping = 0x05        // [f64 senderUptime]
         case pong = 0x06        // [f64 senderUptime]
         case accept = 0x10
-        case hello = 0x11       // [u16 col][u16 row] — initial cursor
+        case hello = 0x11       // [u32 caret byte offset] — initial caret
         case benchMark = 0x7f   // [u8 kind][f64 a][f64 b] — bench only
     }
 
@@ -330,6 +330,21 @@ final class Session {
         var raw: UInt64 = 0
         for i in (0..<8).reversed() { raw = (raw << 8) | UInt64(bytes[offset + i]) }
         return Double(bitPattern: raw)
+    }
+
+    /// A caret, as four little-endian bytes. Phase 2 sent two u16s (a column
+    /// and a row) because the document was a fixed cell array; a rope has a
+    /// byte offset instead. Same four bytes on the wire, so
+    /// `bytes_per_keystroke_on_wire` is untouched (PLAN.md §5.3).
+    static func offsetBytes(_ v: Int) -> [UInt8] {
+        let u = UInt32(truncatingIfNeeded: max(0, v))
+        return [UInt8(u & 0xFF), UInt8((u >> 8) & 0xFF), UInt8((u >> 16) & 0xFF), UInt8((u >> 24) & 0xFF)]
+    }
+
+    static func readOffset(_ bytes: [UInt8], _ offset: Int) -> Int {
+        guard bytes.count >= offset + 4 else { return 0 }
+        return Int(UInt32(bytes[offset]) | (UInt32(bytes[offset + 1]) << 8)
+                   | (UInt32(bytes[offset + 2]) << 16) | (UInt32(bytes[offset + 3]) << 24))
     }
 
     static func u16Bytes(_ v: Int) -> [UInt8] {

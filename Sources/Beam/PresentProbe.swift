@@ -47,7 +47,7 @@ final class PresentProbe {
 
     private func probeRender() {
         let vis = window.occlusionState.contains(.visible)
-        view.app.grid.typeAscii(UInt8(65 + (ok + dropped) % 26))
+        _ = view.app.doc.insert([UInt8(65 + (ok + dropped) % 26)])
         let t0 = monotonicNow()
         view.render(t0: nil)  // bypass accounting; we watch the raw handler below
         view.onProbePresent = { [weak self] presentedTime in

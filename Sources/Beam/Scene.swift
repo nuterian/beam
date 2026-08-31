@@ -20,79 +20,84 @@ struct InstanceWriter {
         count += 1
     }
 
-    /// Draws ASCII. Non-printables are skipped rather than boxed: Beam has one
-    /// font and one cell size, and a tofu box would be the first lie the grid told.
+    /// A filled rectangle of cells, drawn from the solid-block glyph.
+    ///
+    /// **This is the whole GUI vocabulary** (PLAN.md §5.3). Selection, the
+    /// caret's row, an overlay's plane, the scrim behind it, a hovered row — a
+    /// terminal can only colour a character, and every one of those is instead
+    /// a *surface*. On a glyph grid they cost one instance per cell in the same
+    /// buffer as the text, so Beam gets the single most GUI-ish affordance
+    /// there is for no draw call and no new machinery. Write the fill BEFORE
+    /// the text that sits on it: the blend is premultiplied source-over in
+    /// instance order, so later instances composite over earlier ones.
+    mutating func fill(col: Int, row: Int, cols: Int, rows: Int,
+                       ink: Renderer.Ink, alpha: UInt8 = 255) {
+        guard cols > 0, rows > 0, alpha > 0 else { return }
+        for r in row..<(row + rows) {
+            for c in col..<(col + cols) {
+                put(col: c, row: r, glyph: GlyphAtlas.blockGlyphIndex, ink: ink, alpha: alpha)
+            }
+        }
+    }
+
+    /// Draws a string, **one cell per Unicode scalar**.
+    ///
+    /// It used to iterate UTF-8 *bytes* and advance the column for each one,
+    /// which silently mangled every non-ASCII character: a two-byte `é` drew
+    /// nothing and consumed two cells, so the rest of the line slid left by one
+    /// and stayed wrong. That was survivable while Beam's only text was its own
+    /// ASCII chrome; it is a corruption bug the moment a real file is opened
+    /// (PLAN.md §5.3). Scalars outside the atlas resolve through the glyph
+    /// cache, which rasterizes on demand; anything it cannot supply draws the
+    /// replacement glyph rather than a hole, because a missing character that
+    /// is *visibly* missing is honest and a missing character that shifts the
+    /// line is not.
     @discardableResult
     mutating func text(_ s: String, col: Int, row: Int, ink: Renderer.Ink, alpha: UInt8 = 255) -> Int {
         var c = col
-        for b in s.utf8 {
-            if b >= 32 && b < 127 { put(col: c, row: row, glyph: UInt16(b - 32), ink: ink, alpha: alpha) }
+        for scalar in s.unicodeScalars {
+            put(col: c, row: row, glyph: GlyphCache.shared.glyph(for: scalar), ink: ink, alpha: alpha)
             c += 1
         }
         return c
     }
 }
 
-/// Every pixel Beam draws. Three surfaces, one atlas, one draw call.
+/// Every pixel Beam draws. Two surfaces, one overlay, one atlas, two draw calls.
 ///
-/// **The layout grid** (PLAN.md §5.2, composition). Beam has one alignment
-/// grid and every surface obeys it, so the app reads as one designed page
-/// rather than three screens that happen to share a font:
+/// **The layout grid** (PLAN.md §5.2 composition, §5.3 the editor). Beam has
+/// one alignment grid and everything obeys it, so the app reads as one designed
+/// page rather than as screens that happen to share a font:
 ///
 /// ```
-///   col:  0        6                                             cols-6
-///         |        |                                                  |
-///  row 0  |  (traffic lights live in this band — nothing is drawn here)
-///  row 3  |        beam
-///  row 6  |        you    studio-mbp
-///  row 9  |        1  ▪   marlowe-air
-///  row 11 |        2  ▪   atlas-mini            <- peers every OTHER row
-///   ...   |
-///  last   |        press a number, or click             p50 8.4  p99 12.1 ms
+///   col:  0   4  6                                              cols-1
+///         |   |  |                                                   |
+///  row 0  |      (traffic lights live in this band — nothing is drawn here)
+///  row 1  |      renderer.rs ·          <- the name, where a title would be
+///  row 3  |   1  use std::sync::Arc;                                 #
+///  row 4  |   2                                                      #
+///  row 5  |   3  pub struct Renderer {                               #  <- scroll
+///   ...   |      ^gutter hangs LEFT of the text margin
+///  last   |      12:25                    ▪▪ 2 nearby ⌘K   p50 4.2 ms
 /// ```
 ///
-/// Two spacing rules do most of the work. **List items get air** — peers sit
-/// two rows apart, so the roster reads as a list of machines rather than as a
-/// code listing. **Paragraph lines do not** — the two lines of an empty or
-/// denied state are one sentence and stay adjacent. And the page is anchored
-/// at both ends: a block at the top, a single quiet line along the bottom.
+/// Two spacing rules do most of the work. **List items get air** — an overlay's
+/// rows and a peer list read as lists rather than as code listings. **Paragraph
+/// lines do not** — the two lines of a designed empty state are one sentence
+/// and stay adjacent. And the page is anchored at both ends: the document's
+/// name at the top, one quiet instrument line along the bottom.
 enum Scene {
-    /// Left inset, in cells. 6 cells is 63 pt at 2x, which is exactly past the
-    /// right edge of the traffic lights — so the chrome sits in the margin the
-    /// design already reserved instead of on top of anything.
+    /// Left inset, in cells. 6 cells lands just past the right edge of the
+    /// traffic lights — so the chrome sits in the margin the design already
+    /// reserved instead of on top of anything.
     static let margin = 6
     /// First row anything is drawn on. Rows 0–2 are the band the traffic lights
-    /// occupy; leaving them empty is what makes a title-less window look
+    /// occupy; leaving them clear is what makes a title-less window look
     /// deliberate rather than broken.
     static let topRow = 3
-    /// Your own identity, three rows under the mark.
+    /// On the join-code surface, the row carrying who you are joining — three
+    /// rows under the mark, the same rhythm every other block uses.
     static let identityRow = topRow + 3
-    /// Grid row of the first peer. Shared with GridView's click hit-test —
-    /// clicking a peer and pressing its number must select the same peer.
-    static let firstPeerRow = topRow + 6
-    /// Peers every other row. The blank row between them is the click target's
-    /// second half, so the rhythm costs nothing in pointing accuracy.
-    static let peerRowStride = 2
-
-    /// Columns inside a peer row. `nameCol` is shared with the identity row, so
-    /// your machine and everyone else's line up in one column.
-    static let numberCol = margin
-    static let chipCol = margin + 3
-    static let nameCol = margin + 6
-
-    static func peerRow(_ i: Int) -> Int { firstPeerRow + i * peerRowStride }
-
-    /// Inverse of `peerRow`, for the click hit-test. Integer division means a
-    /// peer's row *and* the blank under it both select it — a two-row target.
-    static func peerIndex(atRow row: Int) -> Int {
-        (row - firstPeerRow) / peerRowStride
-    }
-
-    /// The editor's text origin. Same left margin as every other surface; two
-    /// rows down so the first line of code is not wedged against the window's
-    /// top edge beside the close button.
-    static let editorCol = margin
-    static let editorRow = 2
 
     // MARK: - The join code
 
@@ -165,52 +170,6 @@ enum Scene {
         }
     }
 
-    // MARK: - Surfaces
-
-    /// The launch screen IS the peer list. Alone on the network is a designed
-    /// state with its own words, not a blank area where a list would be.
-    static func roster(_ app: AppModel, into w: inout InstanceWriter, now: Double,
-                       cols: Int, rows: Int) {
-        w.text("beam", col: margin, row: topRow, ink: .accent)
-        w.text("you", col: margin, row: identityRow, ink: .faint)
-        w.text(Peer.display(of: app.localName), col: nameCol, row: identityRow, ink: .dim)
-
-        let row = firstPeerRow
-        switch app.presence {
-        case .localNetworkDenied:
-            w.text("local network access is off.", col: margin, row: row, ink: .red)
-            w.text("system settings > privacy & security > local network > beam",
-                   col: margin, row: row + 1, ink: .faint)
-            return
-        case .advertiseFailed:
-            w.text("cannot advertise on this network.", col: margin, row: row, ink: .red)
-            w.text("beam can still see peers, but they cannot see you.",
-                   col: margin, row: row + 1, ink: .faint)
-            return
-        case .searching, .ok:
-            break
-        }
-
-        if app.peers.isEmpty {
-            w.text("no one else here yet.", col: margin, row: row, ink: .dim)
-            w.text("beam is listening. open beam on another mac.",
-                   col: margin, row: row + 1, ink: .faint)
-            return
-        }
-
-        for (i, peer) in app.peers.prefix(9).enumerated() {
-            let a = AppModel.alpha(since: peer.appearedAt, now: now)
-            let r = peerRow(i)
-            w.text("\(i + 1)", col: numberCol, row: r, ink: .faint, alpha: a)
-            w.put(col: chipCol, row: r, glyph: GlyphAtlas.chipGlyphIndex,
-                  ink: .peer(peer.inkIndex), alpha: a)
-            w.text(peer.display, col: nameCol, row: r, ink: .fg, alpha: a)
-        }
-        // Bottom-left, on the same line the HUD uses on the right: the page is
-        // anchored at both ends instead of trailing off under the last peer.
-        w.text("press a number, or click", col: margin, row: max(0, rows - 1), ink: .faint)
-    }
-
     /// Six digits, both screens, one keypress each. The gesture already landed
     /// — this surface is drawn before any network byte moves, which is why the
     /// connection feels instant and why the dashes become digits rather than
@@ -258,63 +217,534 @@ enum Scene {
         }
     }
 
-    /// The editor: the grid, your block cursor, and the peer's caret with their
-    /// name beside it in their colour.
-    static func editor(_ app: AppModel, into w: inout InstanceWriter, now: Double,
-                       cols: Int, rows: Int) {
-        let model = app.grid
-        // The editor sits on the same margin as every other surface, so the
-        // whole app is one page. Its text area is what is left over.
-        let visibleRows = min(model.rows, max(0, rows - editorRow - 1))
-        let visibleCols = min(model.cols, max(0, cols - editorCol - margin))
-        model.cells.withUnsafeBufferPointer { cells in
-            for row in 0..<visibleRows {
-                let base = row * model.cols
-                for col in 0..<visibleCols {
-                    let c = cells[base + col]
-                    if c < 32 || c >= 127 { continue }
-                    w.put(col: editorCol + col, row: editorRow + row, glyph: UInt16(c - 32), ink: .fg)
+    // MARK: - The editor
+
+    /// **The whole frame, for whichever surface is up, as its planes.**
+    ///
+    /// `GridView`, `--dump-scene` and `--screenshot` all call this one function,
+    /// so the window, the ASCII view and the PNGs cannot describe different
+    /// layouts — they describe the same one by construction rather than by
+    /// agreement (PLAN.md §5.2). It is also the only place that knows Beam has
+    /// two planes.
+    static func frame(_ app: AppModel, into w: inout InstanceWriter, now: Double,
+                      cols: Int, rows: Int, widthPx: Int, hud: [Span]) -> [Renderer.Plane] {
+        switch app.surface {
+        case .pairing:
+            pairing(app, sas: app.session?.sas ?? app.debugSAS ?? "", into: &w, now: now, cols: cols, rows: rows)
+            return [Renderer.Plane(count: w.count)]
+        case .editor:
+            editorDocument(app, into: &w, now: now, cols: cols, rows: rows)
+            let documentCount = w.count
+            editorChrome(app, into: &w, now: now, cols: cols, rows: rows, hud: hud)
+
+            let L = EditorLayout(cols: cols, rows: rows, lineCount: app.doc.buffer.lineCount)
+            let cellH = max(1, app.cellHeightPx)
+            let originY = cellH / 2
+            return [
+                Renderer.Plane(
+                    count: documentCount,
+                    // Whole pixels: the sub-cell remainder of the scroll, and
+                    // nothing else. This is what makes scrolling continuous
+                    // while every glyph still lands on a device pixel.
+                    originOffsetPx: SIMD2(0, Float(-(app.doc.scrollPx % cellH))),
+                    // A line scrolled halfway out is clipped here rather than
+                    // allowed to run under the filename or the status line.
+                    scissorPx: (x: 0, y: originY + L.topRow * cellH,
+                                width: widthPx, height: L.docRows * cellH)),
+                Renderer.Plane(count: w.count - documentCount),
+            ]
+        }
+    }
+
+    /// Where everything on the editor surface goes, derived once per frame.
+    ///
+    /// Beam has no title bar, so **row 1 is the document's name** — exactly
+    /// where a title would be, past the traffic lights, on the same 6-cell
+    /// margin every other surface obeys. The document starts at row 3, below
+    /// the band the lights occupy. The last row is the status line.
+    ///
+    /// **Line numbers hang to the LEFT of the text margin.** The code keeps
+    /// column 6, so `beam`, the filename and the first character of every line
+    /// all sit on one alignment; the gutter lives in the margin the design
+    /// already reserved for chrome instead of pushing the text right. Only a
+    /// file with more lines than fit in that margin moves the code (PLAN.md §5.3).
+    struct EditorLayout {
+        let cols: Int, rows: Int
+        /// The tab strip sits **beside the traffic lights**, on their own row.
+        ///
+        /// Measured rather than assumed: on a `fullSizeContentView` window the
+        /// lights occupy device pixels x 20...140, y 25...50 — which is grid
+        /// row **0**, columns 0...6, and nothing else. So row 0 is not a band
+        /// that has to be left empty; it is a row with six columns spoken for.
+        /// Tabs start at column 8 and share it, the way every modern Mac app
+        /// puts its tabs level with the lights.
+        let tabRow = 0
+        /// First document row — the one immediately below the lights. §5.3
+        /// spent five rows on non-document chrome (blank, filename, blank, a
+        /// blank above the status line, and the status line); this spends two,
+        /// the tab row and the status line. **Three more editing rows than
+        /// §5.3, with tabs, a rail and a full menu bar added.**
+        let topRow = 1
+        let statusRow: Int
+        let docRows: Int
+        /// The left icon rail, in cells. Vertical chrome costs zero editing
+        /// rows, which is the entire reason the rail is where the navigation
+        /// lives (PLAN.md §5.4).
+        let railCols = 4
+        /// Column the last digit of a line number sits on.
+        let gutterRight: Int
+        let codeCol: Int
+        let textCols: Int
+        /// Where the tab strip starts. Fixed, not derived from the line count:
+        /// tabs that slid sideways when you switched to a longer file would be
+        /// the worst kind of motion.
+        var tabCol: Int { railCols + 4 }
+        /// First row a rail icon may occupy. One row below the document's
+        /// first line, so the rail does not start hard against the tab strip's
+        /// divider.
+        var railTopRow: Int { topRow + 1 }
+
+        init(cols: Int, rows: Int, lineCount: Int) {
+            self.cols = cols
+            self.rows = rows
+            statusRow = max(1, rows - 1)
+            docRows = max(1, statusRow - topRow)
+            var digits = 1
+            var n = max(1, lineCount)
+            while n >= 10 { n /= 10; digits += 1 }
+            // The gutter hangs between the rail and the code, and the code
+            // column only moves for a file with more lines than fit there.
+            let code = max(railCols + 4, digits + railCols + 2)
+            codeCol = code
+            gutterRight = code - 2
+            textCols = max(1, cols - code - 1)
+        }
+
+        func row(ofLine line: Int, topLine: Int) -> Int { topRow + (line - topLine) }
+    }
+
+    // MARK: - Tabs and the rail
+
+    /// Walks the tab strip, handing each tab its index, start column and width.
+    /// Drawing and hit-testing both go through it, so a tab can never be drawn
+    /// somewhere you cannot click it. Non-escaping, so it allocates nothing on
+    /// the render path.
+    static func forEachTab(_ app: AppModel, _ layout: EditorLayout,
+                           _ body: (_ index: Int, _ startCol: Int, _ width: Int) -> Void) {
+        var col = layout.tabCol
+        for i in app.documents.indices {
+            // Two cells of padding, the name, a space, and the mark. Tabs abut:
+            // a hairline separates them, which is what a modern tab strip does
+            // and what makes the active tab read as a raised surface rather
+            // than as a floating pill.
+            let width = app.tabTitle(i).unicodeScalars.count + 6
+            guard col + width <= layout.cols - 1 else { return }
+            body(i, col, width)
+            col += width
+        }
+    }
+
+    /// One rail item: an icon and the command it runs.
+    struct RailItem {
+        let icon: UInt16
+        let commandID: String
+        /// Which overlay being open means this item is the active one.
+        let overlay: AppModel.Overlay
+    }
+
+    /// The rail, top to bottom. Change 2 adds `changes` and `history` here and
+    /// nowhere else.
+    static let railItems: [RailItem] = [
+        RailItem(icon: GlyphAtlas.filesIconIndex, commandID: "file.open", overlay: .files),
+        RailItem(icon: GlyphAtlas.peersIconIndex, commandID: "session.peers", overlay: .peers),
+    ]
+    /// Rail rows are three apart. Two was the same rhythm the peer list uses,
+    /// and it was wrong here: a peer row is text and reads as a line in a list,
+    /// while an icon is a *target* and needs the air a target needs. Three rows
+    /// costs nothing — the rail is beside the text, not above it.
+    static let railRowStride = 3
+    static func railRow(_ i: Int, _ layout: EditorLayout) -> Int {
+        layout.railTopRow + i * railRowStride
+    }
+    static func railIndex(atRow row: Int, _ layout: EditorLayout) -> Int {
+        (row - layout.railTopRow) / railRowStride
+    }
+
+    /// The **document plane**: gutter, fills, code, carets. Its origin carries
+    /// the sub-cell scroll offset and it is clipped to the text viewport, which
+    /// is why it cannot share a draw call with the chrome (PLAN.md §5.3).
+    static func editorDocument(_ app: AppModel, into w: inout InstanceWriter, now: Double,
+                               cols: Int, rows: Int) {
+        let doc = app.doc
+        let buffer = doc.buffer
+        let L = EditorLayout(cols: cols, rows: rows, lineCount: buffer.lineCount)
+        let cellH = app.cellHeightPx
+        let topLine = doc.scrollPx / max(1, cellH)
+        let firstCol = doc.scrollXPx / max(1, app.cellWidthPx)
+        let caretLine = buffer.line(ofOffset: doc.caret)
+        let selection = doc.selection
+        // One row past the bottom: a pixel-quantized scroll always exposes part
+        // of a line the cell grid does not have room for, and the scissor is
+        // what makes drawing it safe.
+        let lastLine = min(buffer.lineCount - 1, topLine + L.docRows)
+
+        guard topLine <= lastLine else { return }
+        for line in topLine...lastLine {
+            let r = L.row(ofLine: line, topLine: topLine)
+            let range = buffer.lineRange(line)
+
+            // --- Surfaces first: later instances composite over earlier ones.
+            if line == caretLine && selection == nil {
+                w.fill(col: 0, row: r, cols: cols, rows: 1, ink: .activeLine)
+            }
+            if let sel = selection, sel.lowerBound <= range.upperBound, sel.upperBound >= range.lowerBound {
+                let from = max(sel.lowerBound, range.lowerBound)
+                let to = min(sel.upperBound, range.upperBound)
+                let c0 = doc.cellColumn(ofOffset: from) - firstCol
+                var c1 = doc.cellColumn(ofOffset: to) - firstCol
+                // A selection that runs through a line's end shows the newline
+                // it swallowed as one extra cell, which is how a reader can
+                // tell "to the end of this line" from "to its last character".
+                if sel.upperBound > range.upperBound { c1 += 1 }
+                if c1 > c0 {
+                    w.fill(col: L.codeCol + max(0, c0), row: r,
+                           cols: min(c1, L.textCols) - max(0, c0), rows: 1, ink: .selection)
                 }
             }
-        }
-        // Your cursor: a solid block, and it does not blink. See PLAN.md §5.1.
-        if model.cursorRow < visibleRows && model.cursorCol < visibleCols {
-            w.put(col: editorCol + model.cursorCol, row: editorRow + model.cursorRow,
-                  glyph: GlyphAtlas.blockGlyphIndex, ink: .dim)
-        }
-        // Their cursor: a thin bar in their colour, with their name trailing it
-        // in their colour, fading in.
-        //
-        // The name goes to the RIGHT of the caret on the SAME row, and only
-        // where the row is actually empty. Floating it above the caret — the
-        // usual editor treatment — put a permanent label on top of the line
-        // above, which on a flat grid with no chrome behind it is just
-        // unreadable code. Trailing it works because a typing caret sits at the
-        // end of its text; when it doesn't, the coloured caret alone says
-        // everything, so we draw nothing rather than cover a character.
-        if let r = app.remote, r.cursor.row < visibleRows, r.cursor.col < visibleCols {
-            let ink = Renderer.Ink.peer(r.inkIndex)
-            w.put(col: editorCol + r.cursor.col, row: editorRow + r.cursor.row,
-                  glyph: GlyphAtlas.barGlyphIndex, ink: ink)
-            let labelCol = r.cursor.col + 2
-            if labelCol + r.name.utf8.count <= visibleCols,
-               isRowClear(model, row: r.cursor.row, from: labelCol, count: r.name.utf8.count) {
-                w.text(r.name, col: editorCol + labelCol, row: editorRow + r.cursor.row, ink: ink,
-                       alpha: AppModel.alpha(since: r.since, now: now))
+
+            // --- The line number, in the margin, brighter on the caret's line.
+            let label = "\(line + 1)"
+            w.text(label, col: L.gutterRight - label.count + 1, row: r,
+                   ink: line == caretLine ? .dim : .faint)
+
+            // --- The text.
+            drawLine(doc, line: line, range: range, into: &w,
+                     col: L.codeCol, row: r, firstCol: firstCol, maxCols: L.textCols)
+
+            // --- Carets, over everything on the row.
+            //
+            // A thin bar, not a block. The block was the terminal talking: it
+            // covers the character you are about to type over, it reads as a
+            // selection, and it is the single strongest "this is a TUI" signal
+            // left in the product. It is drawn even when there IS a selection,
+            // at the selection's active end, because that is where the next
+            // keystroke goes. Its blink is a shader function of one uniform —
+            // nothing here knows the phase (PLAN.md §5.5).
+            if line == caretLine {
+                let c = doc.cellColumn(ofOffset: doc.caret) - firstCol
+                if c >= 0 && c <= L.textCols {
+                    w.put(col: L.codeCol + c, row: r, glyph: GlyphAtlas.caretGlyphIndex, ink: .caret)
+                }
+            }
+            if let remote = app.remote, app.remoteIsInFrontDocument, remote.line == line {
+                let c = remote.cellColumn - firstCol
+                if c >= 0 && c <= L.textCols {
+                    let ink = Renderer.Ink.peer(remote.inkIndex)
+                    w.put(col: L.codeCol + c, row: r, glyph: GlyphAtlas.barGlyphIndex, ink: ink)
+                    // Their name trails the caret, on the same row, and only
+                    // where the row is actually empty — floating it above put a
+                    // permanent label on top of the line above, which on a flat
+                    // grid is just unreadable code (PLAN.md §5.1).
+                    let labelCol = c + 2
+                    if range.upperBound <= doc.offset(line: line, cellColumn: labelCol),
+                       labelCol + remote.name.count <= L.textCols {
+                        w.text(remote.name, col: L.codeCol + labelCol, row: r, ink: ink,
+                               alpha: AppModel.alpha(since: remote.since, now: now))
+                    }
+                }
             }
         }
     }
 
-    /// Whether a run of cells is empty, so a label can sit there without
-    /// covering anything a person wrote.
-    private static func isRowClear(_ model: GridModel, row: Int, from col: Int, count: Int) -> Bool {
-        guard row >= 0, row < model.rows else { return false }
-        let base = row * model.cols
-        for c in col..<(col + count) {
-            guard c >= 0, c < model.cols else { return false }
-            if model.cells[base + c] != 0 { return false }
+    /// One line of the document, decoded from UTF-8, tabs expanded, coloured by
+    /// the highlighter's cached spans.
+    ///
+    /// The ASCII test is inline and does not go through `GlyphCache`: a full
+    /// screen is ~3500 characters and a dictionary lookup on each would cost
+    /// more than Beam's entire measured commit path (PLAN.md §5.3).
+    private static func drawLine(_ doc: Document, line: Int, range: Range<Int>,
+                                 into w: inout InstanceWriter,
+                                 col: Int, row: Int, firstCol: Int, maxCols: Int) {
+        let spans = doc.highlighter.tokens(line: line, buffer: doc.buffer)
+        var spanIndex = 0
+        var cell = 0
+        var i = range.lowerBound
+        // UTF-8 continuation bytes are consumed by the scalar they belong to;
+        // an incomplete sequence draws the replacement box rather than shifting
+        // the rest of the line (PLAN.md §5.3).
+        doc.buffer.withRaw { base, gapStart, gapLen in
+            @inline(__always) func at(_ k: Int) -> UInt8 { base[k < gapStart ? k : k + gapLen] }
+            while i < range.upperBound {
+                let b = at(i)
+                if b == 0x09 {
+                    cell += Document.tabWidth - (cell % Document.tabWidth)
+                    i += 1
+                    continue
+                }
+                let rel = Int32(i - range.lowerBound)
+                while spanIndex < spans.count && spans[spanIndex].end <= rel { spanIndex += 1 }
+                var ink = Renderer.Ink.fg
+                if spanIndex < spans.count, spans[spanIndex].start <= rel {
+                    ink = Renderer.ink(for: spans[spanIndex].kind)
+                }
+
+                var glyph: UInt16
+                var width = 1
+                if b >= 32 && b < 127 {
+                    glyph = UInt16(b - 32)
+                } else if b < 0x80 {
+                    glyph = GlyphAtlas.replacementGlyphIndex
+                } else {
+                    // Decode the scalar so a multi-byte character occupies
+                    // exactly one cell — the bug that made every column after
+                    // an accented letter wrong.
+                    var len = 1
+                    if b & 0xE0 == 0xC0 { len = 2 } else if b & 0xF0 == 0xE0 { len = 3 }
+                    else if b & 0xF8 == 0xF0 { len = 4 }
+                    var value: UInt32 = UInt32(b & (len == 2 ? 0x1F : len == 3 ? 0x0F : len == 4 ? 0x07 : 0x7F))
+                    var ok = i + len <= range.upperBound
+                    if ok {
+                        for k in 1..<len {
+                            let c = at(i + k)
+                            if c & 0xC0 != 0x80 { ok = false; break }
+                            value = (value << 6) | UInt32(c & 0x3F)
+                        }
+                    }
+                    glyph = ok ? (UnicodeScalar(value).map { GlyphCache.shared.glyph(forNonASCII: $0) }
+                                  ?? GlyphAtlas.replacementGlyphIndex)
+                               : GlyphAtlas.replacementGlyphIndex
+                    width = len
+                }
+                let c = cell - firstCol
+                if c >= 0 {
+                    if c >= maxCols { return }
+                    w.put(col: col + c, row: row, glyph: glyph, ink: ink)
+                }
+                cell += 1
+                i += width
+            }
         }
-        return true
+    }
+
+    /// The **chrome plane**: the filename, the status line, the scroll
+    /// indicator, and any overlay. It sits on the whole-pixel grid and does not
+    /// move when the document scrolls.
+    static func editorChrome(_ app: AppModel, into w: inout InstanceWriter, now: Double,
+                             cols: Int, rows: Int, hud: [Span]) {
+        let doc = app.doc
+        let L = EditorLayout(cols: cols, rows: rows, lineCount: doc.buffer.lineCount)
+
+        // Row 0: the tab strip, level with the traffic lights.
+        //
+        // A hairline runs the full width under it, **broken beneath the active
+        // tab** — the oldest trick in tab design and still the clearest: the
+        // front document is not a highlighted row in a list, it is the top of
+        // the surface you are looking at, and the gap in the line is what says
+        // so. Everything here is one device pixel or one filled cell; there is
+        // no border machinery, because on a glyph grid there does not need to
+        // be.
+        var activeTabSpan: Range<Int>?
+        forEachTab(app, L) { i, col, width in
+            let d = app.documents[i]
+            let active = i == app.activeIndex
+            if active {
+                activeTabSpan = col..<(col + width)
+                w.fill(col: col, row: L.tabRow, cols: width, rows: 1, ink: .surface)
+            } else if i > 0 {
+                // A seam between adjacent inactive tabs, never against the
+                // active one — its own fill already separates it.
+                w.put(col: col, row: L.tabRow, glyph: GlyphAtlas.dividerVIndex, ink: .edge)
+            }
+            var c = w.text(app.tabTitle(i), col: col + 2, row: L.tabRow, ink: active ? .fg : .faint)
+            c += 1
+            if d.isModified {
+                w.put(col: c, row: L.tabRow, glyph: GlyphAtlas.dotGlyphIndex,
+                      ink: active ? .dim : .faint)
+            } else if active {
+                w.put(col: c, row: L.tabRow, glyph: GlyphCache.shared.glyph(for: "\u{00D7}"),
+                      ink: .faint)
+            }
+        }
+        for c in 0..<cols where !(activeTabSpan?.contains(c) ?? false) {
+            w.put(col: c, row: L.tabRow, glyph: GlyphAtlas.dividerHIndex, ink: .edge)
+        }
+
+        // The rail: vertical chrome, which costs no editing rows at all.
+        for (i, item) in railItems.enumerated() {
+            let r = railRow(i, L)
+            guard r < L.statusRow else { break }
+            let active = app.overlay == item.overlay
+            // The rail is primary navigation, so its resting state is `dim`,
+            // not `faint`: an icon nobody can see is a keyboard shortcut with
+            // extra steps. And when someone is nearby, the peers icon takes a
+            // PEER colour rather than getting brighter — the rail then carries
+            // presence in the same language the status line and the overlay use,
+            // instead of inventing a second one (PLAN.md §5.2, the identity set).
+            var ink: Renderer.Ink = active ? .fg : .dim
+            if item.overlay == .peers, !active, let first = app.peers.first {
+                ink = .peer(first.inkIndex)
+            }
+            if active { w.fill(col: 0, row: r, cols: L.railCols, rows: 1, ink: .surface) }
+            // An icon is two cells wide, centred in the rail.
+            let c = (L.railCols - 2) / 2
+            w.put(col: c, row: r, glyph: item.icon, ink: ink)
+            w.put(col: c + 1, row: r, glyph: item.icon + 1, ink: ink)
+        }
+
+        // A seam down the rail's right edge and another above the status line.
+        // Both are one device pixel and both sit on a cell edge, so they cost
+        // no row and no column — the difference between "a grid of characters"
+        // and "a window with regions in it" is a few hundred single pixels.
+        for r in L.topRow..<L.statusRow {
+            w.put(col: L.railCols, row: r, glyph: GlyphAtlas.dividerVIndex, ink: .edge)
+        }
+        for c in 0..<cols {
+            w.put(col: c, row: L.statusRow - 1, glyph: GlyphAtlas.dividerHIndex, ink: .edge)
+        }
+
+        if let err = doc.ioError {
+            w.text(err, col: L.codeCol, row: L.statusRow, ink: .red)
+        }
+
+        // The scroll indicator: drawn, never animated. An animated scrollbar
+        // pins the display link awake, and nothing in Beam does that.
+        let cellH = max(1, app.cellHeightPx)
+        let total = doc.buffer.lineCount
+        if total > L.docRows {
+            let topLine = doc.scrollPx / cellH
+            let height = max(2, L.docRows * L.docRows / total)
+            let span = max(1, total - L.docRows)
+            let offset = min(L.docRows - height, (L.docRows - height) * topLine / span)
+            w.fill(col: cols - 1, row: L.topRow + max(0, offset), cols: 1, rows: height, ink: .edge)
+        }
+
+        // The status line: where you are on the left, who is here and how fast
+        // we are on the right.
+        if doc.ioError == nil {
+            let pos = doc.buffer.position(ofOffset: doc.caret)
+            let c = w.text("\(pos.line + 1):\(doc.cellColumn(ofOffset: doc.caret) + 1)",
+                           col: L.codeCol, row: L.statusRow, ink: .faint)
+            if let sel = doc.selection {
+                w.text("  \(sel.count) selected", col: c, row: L.statusRow, ink: .faint)
+            }
+        }
+        hudLine(into: &w, spans: presenceSpans(app, now: now) + hud, cols: cols, rows: rows)
+
+        if let overlay = app.overlay {
+            self.overlay(app, overlay, into: &w, now: now, cols: cols, rows: rows)
+        }
+    }
+
+    /// Presence, on the left of the status line's right-hand run.
+    ///
+    /// This is where "the launch screen IS the peer list" went (PLAN.md §5.3).
+    /// A peer arriving is still visible within a second — and now it is visible
+    /// *while you are working*, which a launch screen never was. A permission
+    /// problem says so here in red rather than hiding behind a keypress: §2
+    /// forbids a denial that reads as an empty network, and that is a
+    /// correctness rule, not a courtesy.
+    static func presenceSpans(_ app: AppModel, now: Double) -> [Span] {
+        if app.remote != nil { return [] }   // in a session: the peer's own chip and RTT say it
+        switch app.presence {
+        case .localNetworkDenied:
+            return [Span("local network is off", .red), Span("  ⌘K   ", .faint)]
+        case .advertiseFailed:
+            return [Span("they cannot see you", .red), Span("  ⌘K   ", .faint)]
+        case .searching, .ok:
+            break
+        }
+        guard !app.peers.isEmpty else { return [] }
+        var spans: [Span] = []
+        for peer in app.peers.prefix(6) {
+            spans.append(Span(glyph: GlyphAtlas.chipGlyphIndex, .peer(peer.inkIndex),
+                              alpha: AppModel.alpha(since: peer.appearedAt, now: now)))
+        }
+        spans.append(Span("  \(app.peers.count) nearby", .dim))
+        spans.append(Span("  ⌘K   ", .faint))
+        return spans
+    }
+
+    // MARK: - The overlay
+
+    /// One mechanism, two lists (PLAN.md §5.3). A scrim over the document, a
+    /// panel above it, a query row, a rule, and rows with selection and hover
+    /// fills. It is a *layer*, not a surface: you are choosing something to do
+    /// **to** the document, and losing sight of it would be a worse answer than
+    /// dimming it.
+    /// Wide enough for the longest designed line in it — the Settings path a
+    /// Local Network denial names, which is the one string in Beam that cannot
+    /// be shortened without making it less useful. `--dump-scene` caught it
+    /// running off a 56-cell panel onto the scrim, which is the whole argument
+    /// for a structural view that is diffable.
+    static let overlayWidth = 64
+    static let overlayTopRow = 4
+    static let overlayMaxRows = 10
+
+    /// Grid row of result `i`, shared with the click hit-test.
+    static func overlayRow(_ i: Int) -> Int { overlayTopRow + 3 + i }
+    static func overlayIndex(atRow row: Int) -> Int { row - (overlayTopRow + 3) }
+    static func overlayCol(cols: Int) -> Int { max(0, (cols - overlayWidth) / 2) }
+
+    static func overlay(_ app: AppModel, _ kind: AppModel.Overlay,
+                        into w: inout InstanceWriter, now: Double, cols: Int, rows: Int) {
+        // The scrim is written at 225/255 rather than something gentler because
+        // the blend is in LINEAR light (§5.2): three quarters of coverage there
+        // is only about half the perceived brightness, so a scrim tuned by the
+        // sRGB number would barely dim anything.
+        w.fill(col: 0, row: 0, cols: cols, rows: rows, ink: .scrim, alpha: 225)
+
+        let items = app.overlayItems
+        let shown = min(items.count, overlayMaxRows)
+        let pcol = overlayCol(cols: cols)
+        let panelRows = 3 + max(app.overlayEmptyLines.count, shown) + 1
+        w.fill(col: pcol, row: overlayTopRow, cols: overlayWidth, rows: panelRows, ink: .surface)
+
+        let label: String
+        switch kind {
+        case .files: label = "open"
+        case .peers: label = "who's nearby"
+        case .commands: label = "run"
+        }
+        var c = w.text(label, col: pcol + 2, row: overlayTopRow + 1, ink: .faint) + 1
+        c = w.text(app.overlayQuery, col: c, row: overlayTopRow + 1, ink: .fg)
+        w.put(col: c, row: overlayTopRow + 1, glyph: GlyphAtlas.caretGlyphIndex, ink: .caret)
+        for i in 0..<overlayWidth {
+            w.put(col: pcol + i, row: overlayTopRow + 2, glyph: GlyphAtlas.ruleGlyphIndex, ink: .edge)
+        }
+
+        if items.isEmpty {
+            // Paragraph lines do not get air between them: the two lines of a
+            // designed empty state are one sentence (PLAN.md §5.2).
+            for (i, line) in app.overlayEmptyLines.enumerated() {
+                w.text(line.0, col: pcol + 2, row: overlayRow(i), ink: line.1)
+            }
+            return
+        }
+        for i in 0..<shown {
+            let r = overlayRow(i)
+            if i == app.overlaySelection {
+                w.fill(col: pcol, row: r, cols: overlayWidth, rows: 1, ink: .selection)
+            } else if i == app.overlayHover {
+                w.fill(col: pcol, row: r, cols: overlayWidth, rows: 1, ink: .hover)
+            }
+            var c = pcol + 2
+            let item = items[i]
+            if let n = item.number { c = w.text("\(n)", col: c, row: r, ink: .faint) + 1 }
+            if let ink = item.ink {
+                w.put(col: c, row: r, glyph: GlyphAtlas.chipGlyphIndex, ink: ink)
+                c += 2
+            }
+            // A shortcut sits right-aligned, the way a menu sets one — the
+            // palette and the menu bar are the same table, so they read the same.
+            var room = overlayWidth - (c - pcol) - 2
+            if let sc = item.shortcut, !sc.isEmpty {
+                let n = sc.unicodeScalars.count
+                w.text(sc, col: pcol + overlayWidth - 2 - n, row: r, ink: .faint)
+                room -= n + 2
+            }
+            w.text(String(item.title.suffix(max(1, room))), col: c, row: r,
+                   ink: i == app.overlaySelection ? .fg : .dim)
+        }
     }
 
     // MARK: - The HUD
@@ -328,29 +758,34 @@ enum Scene {
         let text: String
         let ink: Renderer.Ink
         /// A single mark from the atlas instead of text — the peer chip. The
-        /// HUD is drawn from the same atlas as everything else, so a peer's
+        /// line is drawn from the same atlas as everything else, so a peer's
         /// colour can appear inline without a character to stand in for it.
         let glyph: UInt16?
+        /// So a peer arriving in the presence line fades in on the same
+        /// machinery, and under the same fade floor, as everything else.
+        let alpha: UInt8
 
-        var width: Int { glyph != nil ? 1 : text.utf8.count }
+        var width: Int { glyph != nil ? 1 : text.unicodeScalars.count }
 
-        init(_ text: String, _ ink: Renderer.Ink) {
+        init(_ text: String, _ ink: Renderer.Ink, alpha: UInt8 = 255) {
             self.text = text
             self.ink = ink
             self.glyph = nil
+            self.alpha = alpha
         }
-        init(glyph: UInt16, _ ink: Renderer.Ink) {
+        init(glyph: UInt16, _ ink: Renderer.Ink, alpha: UInt8 = 255) {
             self.text = ""
             self.ink = ink
             self.glyph = glyph
+            self.alpha = alpha
         }
     }
 
-    /// HUD, bottom-right, inset by the same margin as the left edge: live
-    /// latency against the same budgets.json CI reads, plus each peer's live
-    /// RTT. We publish our latency because we are the only editor that can
-    /// afford to.
-    static func hud(into w: inout InstanceWriter, spans: [Span], cols: Int, rows: Int) {
+    /// The status line's right-hand run, inset by the same margin as the left
+    /// edge: who is nearby, then live latency against the same budgets.json CI
+    /// reads, plus each peer's live RTT. We publish our latency because we are
+    /// the only editor that can afford to.
+    static func hudLine(into w: inout InstanceWriter, spans: [Span], cols: Int, rows: Int) {
         var width = 0
         for s in spans { width += s.width }
         guard width > 0 else { return }
@@ -358,10 +793,10 @@ enum Scene {
         let row = max(0, rows - 1)
         for s in spans {
             if let g = s.glyph {
-                w.put(col: col, row: row, glyph: g, ink: s.ink)
+                w.put(col: col, row: row, glyph: g, ink: s.ink, alpha: s.alpha)
                 col += 1
             } else {
-                col = w.text(s.text, col: col, row: row, ink: s.ink)
+                col = w.text(s.text, col: col, row: row, ink: s.ink, alpha: s.alpha)
             }
         }
     }

@@ -384,7 +384,9 @@ Nothing else was added, and the refusals are the design:
   where the product is making a security promise. The code lands.
 - **The caret has no easing, and does not blink.** A sliding cursor manufactures perceived latency
   in the one product that exists to delete it, and a blink is an infinite animation that would pin
-  the display link awake and put a permanent floor under idle CPU.
+  the display link awake and put a permanent floor under idle CPU. *(§5.5 revisits this: the first
+  half stands, the second was wrong — a blink that **stops** is finite, and finite was all the rule
+  ever required.)*
 - **The launch screen does not fade in.** Fading the first frame would make the app feel slower
   than the 148 ms it measures.
 
@@ -418,6 +420,570 @@ re-discover it. A separate run during that stretch went red (presented p99 41.6,
 machine that had just failed five bench attempts in a row; a clean re-run measured 33.7 / 7.9, which
 is what "never gate on garbage" means in practice.
 
+## 5.3 Phase 1 design of record — a real editor that is still not a TUI
+
+Phases 0–2 built something that *works* and, since §5.2, looks excellent. It is also
+unmistakably a **terminal application**: a fixed 200×120 ASCII cell array, no file, no
+selection, no scrolling, no mouse past a click target, and the only way in is a list of
+machines. This section is the design of record for making Beam an editor you would open a
+file in, and for making it read as a **GUI** while keeping the chrome as minimal as §5.1
+left it. It **amends Pillar 4 and §5.1**; where it does, it says so and why.
+
+### What is actually being amended
+
+**Pillar 4 said "Beam removes UI. No menus/toolbars/panels."** That is kept, and sharpened:
+Beam removes **chrome**, not **capability**. The distinction the original wording could not
+make, and that this phase forces:
+
+> *Chrome* is UI whose job is to host commands — menus, toolbars, sidebars, tab bars,
+> inspectors. It is permanently on screen, it is about the application, and Beam has none.
+> *Capability* is UI that **is** the document or is directly manipulating it — a gutter, a
+> selection, a scroll position, a caret, a hover state. It is about the user's own text, and
+> an editor without it is not minimal, it is unfinished.
+
+A file tree pinned to the left edge is chrome. A file *finder* that exists only while you are
+finding a file is not — it is a transient, in the same family as the join-code screen Beam
+already has. **Every list in Beam is now a transient overlay, and there are exactly two of
+them: files and peers.** That is the amendment, and the lineup test still passes: §5.3's
+editor next to five VS Code clones is the one with no sidebar, no tab bar, no toolbar, no
+title bar and no status bar — one document, one line of instrument readout, and a window
+whose entire surface is content.
+
+**§5.1 said "the launch screen IS the peer list."** That is amended: **Beam launches into a
+document.** Single player is not a mode, it is the ground state, and collaboration is an
+*action* taken from inside the document. Two things make that affordable rather than a
+retreat from Pillar 1:
+
+- **Presence moves onto the one line Beam already had.** The HUD becomes the **status line**,
+  and its left half carries presence: each nearby machine's chip in its own colour, a count,
+  and the key that opens the list — `▪▪ 2 nearby ⌘K`. A peer arriving is still visible within
+  a second, without a screen dedicated to it, and now it is visible *while you are working*,
+  which the roster-as-launch-screen never was. Presence got more continuous, not less.
+- **The TCC-denial and cannot-advertise states stay on the glass.** §2 requires that a
+  permission denial can never be mistaken for an empty network, and a designed state hidden
+  behind a keypress would break that. When discovery reports a problem the presence line says
+  so directly, in red, and the overlay carries the full sentence and the Settings path. This
+  is a correctness property, not a courtesy, and it is why presence could not simply be moved
+  into the overlay wholesale.
+
+**§5.1's one-line keymap is replaced, and gets longer.** It was one line because there was
+nothing to do. The new one is longer because there is now a document — and every key in it
+except one is a binding macOS already taught the user:
+
+> **⌘O** open · **⌘S** save · **⌘K** who's nearby · **⌘Z / ⇧⌘Z** undo · **⌘A** select all ·
+> **⌘Q** quit · **esc** closes an overlay, cancels a join, leaves a session ·
+> **return** confirms the join code · **arrows** move, **⇧arrows** select ·
+> **click** places the caret, **drag** selects, **wheel** scrolls
+
+Beam invents exactly one binding, `⌘K`. A GUI is in large part an application you do not have
+to learn a keymap for, so the correct number of invented bindings is as close to zero as the
+product allows.
+
+### Where Beam sits on the TUI/GUI seam
+
+"TUI" and "minimal" are not the same axis, and conflating them is what produced a beautiful
+terminal. The decision, stated as two lists:
+
+**Kept from the terminal, because it is why Beam is fast:** one monospace grid, one glyph
+atlas, one instanced draw per plane, cell-quantized *layout*, no AppKit control anywhere, a
+palette rather than a colour picker.
+
+**Taken from the GUI, because it is what an editor is:** filled surfaces (selection, the
+caret's row, an overlay's plane, the scrim behind it, hover); real scrolling, quantized to
+**device pixels, not to cells**; mouse-first affordances — click to place, drag to select,
+wheel to scroll, hover to preview a choice; a gutter; focus states; and a document that is a
+file rather than a fixed array.
+
+The seam runs through *scrolling*, and that is the sharpest single decision here. A terminal
+scrolls by whole lines because a cell is its atom. Beam scrolls by whole **pixels**: the
+document plane's origin carries the sub-cell remainder, so a two-finger flick moves the text
+continuously and every glyph still lands on whole device pixels (§5.2's invariant is about
+the *cell metrics*, and it is untouched — a whole-pixel origin offset preserves it exactly).
+That costs a **second draw call** — the document plane scrolls, the chrome plane does not —
+which is why `draw_calls_per_frame` was budgeted at 2 with a gate of 4 while measuring 1. The
+budget written in Phase 0 is being spent on the thing it was reserved for, and the document
+plane additionally gets a scissor rect, so a half-scrolled line is clipped by the viewport
+instead of running under the filename.
+
+### The surfaces
+
+**One surface, one layer, one takeover.**
+
+- **The editor (always).** Row 1 carries the filename, in the band the traffic lights occupy
+  — Beam has no title bar, so the document's name sits exactly where a title would be, past
+  the lights, on the §5.2 margin. The document starts at row 3. **Line numbers hang to the
+  left of the text margin**, right-aligned, in `faint`, with the caret's own line in `dim`;
+  the *code* keeps the 6-cell margin every other surface obeys, so the gutter lives in the
+  space the design already reserved for chrome instead of pushing the text right. The last
+  row is the status line: caret position on the left, presence and live latency on the right.
+  A scroll indicator sits in the last column when the document is taller than the viewport —
+  drawn, never animated, so it costs the idle loop nothing.
+- **The overlay (a layer over the editor).** One mechanism, two lists. `⌘O` fuzzy-finds files;
+  `⌘K` lists peers. A `scrim` over the whole viewport, a `surface` panel, a query row, a rule,
+  and rows with selection and hover fills. It is a *layer*, not a surface: the document stays
+  behind it, dimmed, because you are choosing something to do *to* the document and losing
+  sight of it would be a worse answer.
+- **The join code (a full takeover).** Unchanged from §5.1. It is a security ritual and it
+  must dominate the screen: six digits, both machines, one keypress each. It is the one place
+  in Beam where the document is not the point.
+
+The `.roster` surface is deleted. Its three designed states — the list, alone-on-the-network,
+and the Local Network denial — move into the peers overlay with their copy intact, and the
+denial additionally surfaces on the status line as described above.
+
+### Rejected, and why
+
+- **A persistent file rail** (a 26-column pane, a tree, a divider). Sketched and rendered
+  before it was rejected, which is the only honest way to reject something: `--screenshot`
+  showed a screen that could be any of a dozen editors, which is precisely the lineup test
+  Pillar 4 exists to fail. It also permanently spends a quarter of the window on navigation
+  you do a few times an hour, pushes the code right, and puts the traffic lights on top of the
+  tree. The overlay does the same job in the same number of keystrokes and costs zero pixels
+  when you are not using it.
+- **Keeping the roster as the launch screen, with the editor behind it** (sketch C). It
+  preserves §5.1 exactly and it is the option that changes least — but it makes single player
+  a second-class destination reached *through* a list of machines you may not have, and Beam
+  would still launch into something that is not a document. An editor whose launch screen is
+  a network browser is not an editor you would open a file in, which was the whole mission.
+- **`NSOpenPanel` for ⌘O.** It is the "real editor" answer and it is wrong twice: it is an
+  AppKit control in an app whose entire claim is that it has none, and it is a process-hosted
+  panel with latency Beam does not control and cannot measure. Beam's own palette is faster,
+  is drawn from the same atlas as everything else, and is gated (`overlay_keystroke_to_commit`).
+- **Mixing files and peers into one list.** Tempting, and one fewer binding — but nobody
+  fuzzy-searches across "a file to edit" and "a person to work with", and the merged list
+  would have to explain itself in a way neither list does.
+- **Editor-wide hover tracking.** Mouse-move events would wake the render loop on every
+  motion, which is the exact shape of the 3.4%-idle-CPU regression Phase 2 caught. Hover
+  exists only while an overlay is open, where there is something to hover *over*; the
+  tracking area is installed with the overlay and removed with it.
+- **tree-sitter, for now.** See "Syntax" below. It stays the candidate on record for
+  structural features; it is not what colours the first screen of code.
+
+### The text model
+
+`GridModel` — a flat 200×120 ASCII array with last-writer-wins — cannot hold a file and was
+never meant to. It is replaced by `TextBuffer`: **a gap buffer over the file's bytes, plus a
+line index stored in raw-buffer coordinates.**
+
+The line index is the part worth designing rather than discovering. Line starts are stored as
+offsets into the *raw* buffer, gap included, so an insert at the caret advances `gapStart` and
+**changes no stored offset at all** — the offsets below the gap are still below it and the
+ones above are untouched. Typing therefore costs no line-index work whatever, in a 1 MB file
+as in an empty one; the array only moves when a newline is inserted or deleted, and offsets
+only shift when the gap itself moves, proportional to what moved. The obvious design — logical
+offsets — makes every keystroke an O(lines) fixup, which is inside the commit budget and still
+the wrong shape.
+
+**It is built to be replaced.** Phase 3 puts `yrs` underneath, and the L4/L6 budgets are
+already written. So the split is: `TextBuffer` owns the *bytes*, `LineIndex` owns the
+*structure*, and `LineIndex` is updated only from `(offset, insertedBytes, deletedByteCount)`
+— which is exactly the shape of a CRDT delta, not a privilege of owning the storage. Every
+edit, local or remote, goes through one `apply(_ edit:)` funnel that emits that triple, so
+Phase 3 swaps the storage and keeps the index, the undo stack, the highlighter invalidation
+and the render path unchanged.
+
+**Two correctness cliffs, owned rather than discovered.** `InstanceWriter.text` iterated UTF-8
+*bytes* and advanced a column for each one, so a two-byte `é` drew nothing and consumed two
+cells and every column downstream — the caret, a click, a selection — was silently wrong. It
+now draws one cell per Unicode scalar. And the atlas was a fixed 16×7 grid of ASCII 32–126;
+it is now 16×16, with 100 static slots and 156 filled on demand by `GlyphCache` with LRU
+eviction scoped to the frame being built, so a glyph can never be evicted out from under an
+instance that already points at it. **The ASCII fast path does not go through the cache**: a
+full screen of code is ~3500 characters and a dictionary lookup on each would have cost more
+than Beam's entire measured commit path (0.34 ms p50), so callers test `32...126` inline and
+the cache is the *miss* path only. A scalar this machine has no glyph for draws a replacement
+box — visibly missing is honest; invisibly missing shifts the line.
+
+**One cell per scalar is Phase 1's documented limit.** A glyph wider than the cell (every East
+Asian character, most emoji) is squashed to fit rather than clipped: both are wrong, only one
+is still readable, and neither can slide the rest of the line, which is the property that
+actually matters. **East Asian width joins bidi, IME and accessibility on §1's list** of what
+the web gave us for free and we signed up to rebuild — the design is two atlas slots per wide
+scalar and a width-aware column map, and it is not this phase.
+
+### Syntax highlighting — and why it is not tree-sitter yet
+
+The classic way to destroy a typing latency is to highlight on the keystroke path, so the
+architecture matters more than the parser:
+
+- Tokens are cached **per line**, as spans, and a line is re-lexed only when its own bytes
+  change or when the carry state arriving from the line above it changes.
+- The lexer never runs between `keyDown` and the frame. An edit marks lines dirty; the frame
+  lexes only the dirty lines that are actually *visible*, which is bounded by the viewport
+  and not by the file.
+- The palette is already the interface: a token kind is an `Ink`, an `Ink` is 8 bits in a
+  word the instance already carried, and colouring a character therefore costs zero extra
+  instances, zero extra bytes and zero extra draw calls.
+
+Inside that architecture the parser is a swappable detail, and Phase 1 ships **a line-based
+incremental lexer** driven by a small per-language table, not tree-sitter. The reasons, since
+§6 named tree-sitter as the candidate:
+
+1. It is a C dependency and a compiled grammar — roughly 1.5 MB against a **551 KB** binary —
+   bought for a screen of colour that a lexer with a carry state gets right.
+2. Phase 3 has to keep the parse in sync with `yrs` deltas. A per-line carry state is
+   reconstructed from a byte range; a syntax tree needs every edit translated into
+   `ts_tree_edit` and would double the incremental-update surface at exactly the moment that
+   surface gets a second writer.
+3. What tree-sitter is genuinely better at — folding, expand-selection, structural
+   navigation, correct nesting in raw strings and generics — Beam does not have and is not
+   adding this phase.
+
+So tree-sitter is not rejected, it is **not yet earned**: it stays the candidate for the
+structural features that need it, and it will be measured against these same budgets when
+there is a feature that justifies it. A lexer that mis-colours a nested raw string is a
+mis-coloured token; that is the failure mode being accepted, in writing.
+
+`syntax_highlight_line_us` gates the lexer, and the enforcement that matters is that
+`keystroke_to_commit`, the presented rows and `malloc_bytes_per_keystroke` do not move.
+**§6's commitment stands unchanged: highlighting merges only with every L2 row green, and is
+reverted if they move.**
+
+### What the eyes and the benches found (2026-08-30)
+
+**`--dump-scene` caught a designed state running off its own panel.** The Local
+Network denial's second line — the Settings path, the one string in Beam that
+cannot be shortened without making it less useful — is 59 cells, and the overlay
+panel was 56. In the ASCII dump it visibly spilled past the panel edge onto the
+scrim. The panel is now 64 cells wide and both designed empty states are back to
+§5.1's two-line paragraphs, word for word. That is the third time a structural,
+diffable view has found something a screenshot would not have made obvious, and
+it is why the dump is kept in sync by rule.
+
+**The dump also had to change to stay useful.** Filled surfaces are all the same
+solid-block glyph, so a dump that printed them as `#` replaced the whole editor
+with a wall — the first run of the new editor state was 3,600 hash marks. It now
+maps *glyph plus ink*: a panel is `.`, a selection `~`, a hover `-`, the scroll
+indicator `|`, a lit row nothing at all, and the scrim **nothing** rather than
+blanks, because a scrim dims the document and does not erase it. A structural
+view that blanked everything behind an overlay would be describing a different
+application.
+
+**The overlay's own gate caught the overlay on its first run.** `⌘O`'s filter
+runs on the keystroke path because there is nowhere else to put it, which is
+exactly why `overlay_keystroke_to_commit_p99_ms` was written before the overlay
+was. The first implementation scored every candidate, sorted the whole array,
+and used `paths[i].count` as the tie-break — and `String.count` is O(length),
+called from inside a comparator, n log n times. It measured **12.3 ms p50
+against a 4 ms budget and an 8 ms gate** on a 9,728-file tree. What replaced it
+keeps only the best `limit` results in a single pass, with no full sort and with
+lengths read from the prebuilt byte arrays. The *fix* stands on its own — a
+String's length is not O(1) and a comparator is the worst place to ask for it —
+but the *number* does not: see the validity finding below.
+
+**`NSWindow.occlusionState` is not a visibility oracle, a second time, and this
+time it cost a set of numbers.** Phase 2 found it lying about a window whose app
+had not activated (§5-L2). Here it reported `.visible` for a floating bench
+window while a screensaver was dropping most of its presents — and the editor
+bench happily published. The numbers were wrong in a specific, instructive way:
+a dropped present is re-rendered carrying its **original** `t0`, so the recorded
+latency correctly includes the drop penalty, and just as correctly stops being a
+measurement of Beam. Scroll and selection-drag both read ~16 ms — one whole
+frame — above what the paced typing bench measures under the same code.
+
+The fix is the same one Phase 2 landed and for the same reason: **replace the
+proxy with the ground truth.** `--bench-editor` now counts presents that
+actually reached the glass and refuses to publish below 90% delivery, exactly as
+`--bench-join` does. It also refuses any sample over a second outright — a
+synthesized `CGEvent` carries a raw mach tick count where `NSEvent.timestamp`
+expects nanoseconds-since-boot, which produced a single scroll sample of
+**366,811,454 ms** and would otherwise have been averaged into a percentile. A
+bench that cannot tell a broken clock domain from a latency is not a bench.
+
+**Two things measured cheaper than expected, and are recorded so nobody
+optimises them.** Building a frame with the overlay open — a full-viewport
+scrim, a panel, and the document behind them, about 4,900 instances — costs
+**58 µs**, against **57 µs** for the document alone: filled surfaces really are
+nearly free on a glyph grid, which is the whole premise of §5.3's GUI
+vocabulary. And the fuzzy filter itself, after the fix, is **2.4 µs p50** over
+the repository tree. Neither is where an overlay keystroke spends its time.
+
+### What re-specifying a metric means, and what it does not
+
+Two gated L1 rows change *meaning* in this phase, which §3 permits and silent drift does not:
+
+- **`launch_to_typeable_ms`** meant "first frame presented with a first responder accepting
+  keystrokes", on a screen that was a peer list. It now means typeable **in a document** —
+  a stricter claim, and the reason Beam launches into an *empty untitled buffer* rather than
+  restoring a file: reading a file would put I/O inside a launch budget in exchange for
+  nothing a user asked for. `beam <path>` opens that path; `⌘O` is one key away.
+- **`launch_to_peers_visible_ms`** was premised on the roster being the launch screen. It now
+  means: process exec → the first frame **presented** carrying a peer's chip in the status
+  line. The instrument is unchanged (a `presentedTime`, not a model callback) and §5.2's fade
+  floor still applies, so the frame that claims the number is a frame a human could read.
+
+A third row changes what it *measures*, in the same spirit:
+
+- **`idle_cpu_foreground_alone_pct_core`** ran a bench that never started discovery. That was
+  a fair proxy while Beam idled on a roster whose whole job was discovery; it is not one now
+  that Beam idles on a **document** with discovery running behind it. `--bench-idle` starts
+  discovery, so the bench measures the state the product actually has. This is a strictly
+  *harder* measurement on the same instrument — measured 0.085% of a core without it and
+  0.101–0.118% with, so background discovery costs about 0.02–0.03% of a core, and the row
+  sits on its 0.1% design budget well inside its 0.5% gate.
+
+All three are re-specified in `budgets.json` with the reason, **before** any number moved, and
+no budget is loosened. A fourth, `join_gesture_to_code_visible_ms`, keeps its meaning exactly:
+reaching the peer list is a keypress now, but *the gesture is still the peer's number*, and the
+mark still starts there — opening a list is navigation, and the time a human spends reading one
+is not ours to budget.
+
+## 5.4 Phase 1.5 design of record — version control first, and a shell that earns its chrome
+
+§5.3 made Beam an editor. This section makes it a **version-control tool that you
+happen to edit in**, and gives it the modern shell that implies. It is the second
+deliberate amendment to Pillar 4, it is larger than the first, and it is written
+down for the same reason: the plan is only useful if it says what the product is
+*now*.
+
+### What is being amended, and the one line that is not
+
+**Pillar 4's "no menus/toolbars/panels" is retired as a rule and kept as a
+budget.** §5.3 already replaced it with *chrome vs. capability*; §5.4 goes
+further and admits chrome — a menu bar, document tabs, a left icon rail, a
+changes list, a diff view. The lineup test is retired with it: Beam will look
+like a modern Mac editor, because a tool people are supposed to run their
+version control in has to be legible on sight, and "it looks wrong next to VS
+Code" was a proxy for *fast and uncluttered*, never a goal in itself.
+
+**What is not amended, and must not be:** *no AppKit control anywhere inside the
+window.* This is the one constraint that is load-bearing rather than aesthetic —
+it is why the entire UI is instanced draw calls out of one glyph atlas, why the
+idle loop is at 0.1% of a core, and why `keystroke_to_commit` is 0.34 ms. Tabs,
+the icon rail, the changes list, the diff view and the commit sheet are all
+**instances in the grid**, drawn from the atlas, exactly like the join code is.
+The single exception is the **system menu bar**, which lives outside the window,
+costs zero window pixels and zero draw calls, and is where discoverability
+belongs on macOS.
+
+Every budget in §3–§5 still applies unchanged, and the same rule governs: budget
+first, prove the bench red, never merge red.
+
+### Change 1 — The shell: chrome that costs no vertical space
+
+The insight that makes this free: **rows 0–2 are already empty**, reserved for
+the traffic lights, and §5.3 put only the filename in row 1. Vertical space is
+won, not spent.
+
+- **Document tabs live in the title-bar band** (rows 0–2), starting past the
+  traffic lights on the §5.2 margin. They replace the filename row, so the
+  editable area *grows* by two rows while gaining tabs.
+- **A left icon rail**, three cells wide, drawn as atlas glyphs: files, changes,
+  history, peers. It is vertical, so it costs **zero** editing rows — the one
+  place chrome is genuinely free on a wide screen. The gutter's line numbers
+  shift right by the rail's width and the code margin follows.
+- **The system menu bar** carries every command, grouped and with its key
+  equivalents shown. It is the answer to "I want menus" that costs no window
+  space at all. The **command palette (⌘⇧P)** is the same command table rendered
+  in the grid, so there is one list of what Beam can do and two ways to reach it.
+- **One status row** absorbs the branch, the ahead/behind counts, the dirty file
+  count, presence and the latency readout.
+
+Net: two more editing rows than §5.3, with tabs, a rail and menus added.
+
+**Landed 2026-08-30.** The accounting, exactly: §5.3 spent five rows on
+non-document chrome — row 0 blank, row 1 the filename, row 2 blank, a blank
+above the status line, and the status line. §5.4 spends three — row 0 blank,
+row 1 the **tab strip**, and the status line. The document now starts at row 2
+and runs to the status line with nothing between. **+2 editing rows, with tabs,
+a rail and a full menu bar added**, which is the whole argument that this chrome
+pays for itself.
+
+Details worth not re-deriving:
+- **A rail icon is two cells wide.** A cell is 1:2, so the only way to draw a
+  square icon — and an icon is square — is across two of them; each is one path
+  rendered over two adjacent atlas slots. The rail is 4 cells and the icons are
+  centred in it.
+- **The gutter moved, the code column did not move much.** Line numbers now hang
+  between the rail and the text, so `codeCol` is `max(railCols + 4, digits +
+  railCols + 2)` — column 8 for any file under 100,000 lines. Horizontal is the
+  axis Beam has to spare; vertical is the one it does not.
+- **The peers rail icon takes a peer's colour when someone is nearby**, rather
+  than merely brightening. The rail then carries presence in the same language
+  the status line and the peer overlay already use instead of inventing a second
+  one (§5.2, the identity set).
+- **`--dump-scene` prints an icon's two cells as the same letter** (`ff`, `pp`),
+  so the rail is one glance in a diff rather than two mystery slots.
+
+*Budgeted first, and gated:* `tab_switch_to_presented_60hz_p99_ms`, at the same
+budget as a keystroke — **a command is input**, so undo, tab switching and
+opening the palette all enter the same hybrid render loop and are accounted like
+typing. `draw_calls_per_frame` stays at budget 2: the rail and the tabs are
+chrome-plane instances and earn no third draw.
+
+### Change 2 — Version control as documents, not as a panel
+
+The design rule that keeps this from becoming an IDE: **a diff is a document.**
+It opens as a tab, it lives in the same grid, it scrolls and selects with the
+same code, and the peer-presence machinery works in it unchanged because it is
+not a special surface.
+
+- **The diff ribbon is always on**, in the gutter beside the line numbers:
+  added / modified / deleted against the index, in three palette slots. Zero
+  chrome, and it is the single highest-value git affordance in any editor.
+- **Staging is selection.** Select lines in a diff (or in the editor) and stage
+  them with one key. There is no hunk widget, no checkbox column, no "stage
+  hunk" button — the selection you already have *is* the granularity, which is
+  the simplest interaction any git GUI has ever offered for the hardest part of
+  using git well.
+- **Changes** in the rail is a list of modified files; choosing one opens its
+  diff tab. **History** is a commit graph rendered in the grid; choosing a commit
+  opens *its* diff tab. Everything funnels into the same viewer.
+- **Where git comes from, decided by measurement, not by preference.** Start by
+  shelling out to `git` off the main thread with cached results — no dependency,
+  no binary growth on a 551 KB binary, and nothing on the keystroke path.
+  `libgit2` is the fallback and it is taken only if a budget demands it, exactly
+  as `yrs` and tree-sitter are handled elsewhere in this plan.
+
+*Budgets first:* `git_status_to_ribbon_ms` (repository → gutter ribbons on the
+glass); `diff_10k_line_file_to_first_paint_ms`; `stage_selection_to_presented_ms`;
+`keystroke_to_commit_p50_ms` **unchanged** — git work never touches the
+keystroke path, and that row is the enforcement.
+
+### Change 3 — The novel one: a commit is something two people make together
+
+Every git GUI in existence is single-player. You commit your work, they commit
+theirs, and you meet at a merge. Beam is the only tool where two people are in
+the same document at the same instant, so it is the only tool that can make the
+*commit* a shared act rather than the place where sharing stops. This is the
+part that is actually new, and it is built almost entirely from machinery Beam
+already has.
+
+- **The staging area is shared while a session is live.** Both people see the
+  same staged lines, tinted in each other's peer colours: you can watch someone
+  stage lines 40–60 of `renderer.rs` as they do it. Awareness already streams;
+  a staged range is awareness.
+- **A commit is *proposed*, then confirmed on both screens.** One person writes
+  the message, both see it live, and it lands when both confirm. This is exactly
+  the join code's shape — a thing that requires two screens to agree, one
+  keypress each — reused rather than reinvented, and the same reasoning applies:
+  the confirmation is what makes the shared act real.
+- **Line-level authorship, captured live instead of reconstructed.** Beam already
+  knows who typed which bytes, at the keystroke, in the session. A co-authored
+  commit can therefore carry true per-line attribution — not `git blame`'s
+  guess-by-last-toucher, but who actually wrote it, recorded as it happened.
+  `Co-authored-by:` trailers make it legible to every other git tool; the
+  in-Beam history view colours each line by its real author.
+- **Shared diff reading.** Because a diff is a document, opening one in a session
+  shows your peer that you are reading it, and shows your cursor in it. Reviewing
+  together stops being a screen share.
+
+*Budgets first:* `staged_range_to_peer_presented_ms` (an awareness row, gated
+like the cursor row); `commit_proposal_to_both_screens_ms` (the join code's
+budget, reused); `bytes_per_staged_range_on_wire`; and the L7 idle row, because
+a shared staging area is exactly the kind of feature that starts repainting on a
+timer.
+
+### Order, and what it depends on
+
+1 → 2 → 3, and **not before Phase 1's gate is green**: the shell change moves the
+layout every §5.3 bench measures, so it needs a validated baseline to move
+against. Change 3 also wants Phase 3's `yrs` and its awareness channel to exist
+before shared staging is built on top of the Phase-2 op stream; the parts of it
+that do not (the proposal/confirm gesture, authorship capture) can land earlier.
+
+## 5.5 The caret — what §5.1 got right, and what it got wrong
+
+§5.1 refused to blink, and §5.2 refused to ease. Both refusals were argued from
+performance, both were written into the plan as principle, and **one of them was
+wrong**. Separating them is the whole of this section, because the wrong one was
+costing Beam the single most recognisable "this is a terminal" signal in the
+product: a fat block sitting on top of the character you are about to type.
+
+### The refusal that stands
+
+**Position never animates.** A caret that slides to where you typed manufactures
+perceived latency in the one product that exists to delete it, and it does so on
+the exact path — keystroke to glass — that every budget in §5 is about. The caret
+lands. It has always landed and it always will.
+
+### The refusal that was wrong, and why
+
+§5.1 said: *"A blinking cursor is an infinite animation; it would pin the display
+link awake forever and put a permanent floor under idle CPU."* Every clause of
+that is true, and the conclusion does not follow. The rule the project actually
+needs — stated correctly two paragraphs earlier in the same section, about fades
+— is that **nothing may animate forever**. A blink that *stops* is finite, and
+finite was all the rule ever required.
+
+So the caret now: rests solid while you type and for half a second after, pulses
+while you are still, and **stops pulsing after ten seconds** and rests solid
+again. The display link pauses, idle CPU returns to zero, and the rule is intact.
+It also happens to be better behaviour than a caret that blinks forever — a blink
+means "waiting for you", and after ten seconds of stillness that is no longer
+information.
+
+### The shape
+
+A **thin vertical bar**, two points wide, on the cell's left edge, full cell
+height, in its own palette slot. Three things were wrong with the block:
+
+- It **covers the character it sits on**, which is the character you are about to
+  type over — the one you most need to see.
+- It reads as a *selection*, because on this grid a filled cell is what a
+  selection is. The caret and the selection were the same shape in different
+  colours.
+- It is a terminal's caret, and it is drawn that way because a terminal cannot
+  address anything narrower than a cell. Beam can: the bar is a glyph in the
+  atlas like everything else, so a sub-cell shape costs exactly what a full-cell
+  one costs.
+
+Your caret and a peer's caret are now different glyphs as well as different
+colours — yours is an insertion point, theirs is a presence mark, and they should
+not be the same object in two hues.
+
+### The mechanism, and where the cost actually is
+
+The blink is a **shader function of one uniform**. The CPU passes elapsed time;
+the fragment path recognises the caret's palette slot and multiplies its alpha by
+a shaped cosine. Nothing in the model, the scene or the instance buffer knows
+that the caret is blinking, which means a blink frame does not have to rebuild
+anything — `Renderer.rePresentCaret` re-encodes the *previous* frame's instances
+with a new uniform.
+
+That was the easy part, and it was not where the cost was. Three measured
+lessons, in the order they were learned:
+
+1. **A pulse is frames, and frames are the price.** No GPU trick avoids that; a
+   blinking caret means presenting. What bounds the price is making the animation
+   finite, and making each frame skip work it does not need.
+2. **The curve is flat for 89% of its period**, by construction: the cosine is
+   shaped by a gain and clamped, so it dwells fully on, dwells nearly off, and
+   ramps between them over about 64 ms. Only the ramps need frames — roughly
+   seven presents a second rather than sixty.
+3. **The 60 Hz tick was the real cost, not the presents.** The first
+   implementation skipped the *present* during the flat portions but still ran
+   the display-link callback sixty times a second for ten seconds, doing
+   trigonometry and asking AppKit whether the window was key. Measured **2.0% of
+   a core against a 0.5% budget**. The fix is to sleep: the tick computes when
+   the curve will next move, pauses the display link, and sets a one-shot timer
+   for the ramp. The loop then runs only while something is actually moving.
+
+`caret_blink_cpu_pct_core` (budget 0.5% of a core, gate 1.0%) is the row that
+keeps all of this honest, and `idle_cpu_foreground_alone_pct_core` keeps its
+original meaning because `--bench-idle` now measures a *second* window, after the
+blink has finished. Measuring only the first would have quietly redefined the
+idle gate into a caret gate; measuring only the second would have left the
+caret's cost ungated entirely.
+
+### The finding: an idle bench is not exempt from validity
+
+`--bench-idle` was the last timed bench in the project with no validity check,
+and it looked like the one that could justify not having one — it measures a
+process doing nothing, so what is there to see? Exactly the wrong way round. **On
+an occluded screen every present is dropped, and a dropped present makes the
+render loop recover, which wakes the display link — which is precisely the thing
+being measured.** Occluded, it reported **1.3% of a core** for code that measures
+0.1%, and it published the number, because nothing stopped it.
+
+It now counts presents that reached the glass and refuses below 90% delivery,
+the same ground-truth check `--bench-join` and `--bench-editor` use. That is the
+third time `NSWindow.occlusionState` has been believed and the third time the
+answer was to replace the proxy with the ground truth (§5-L2, §5.3, here). The
+rule is now general enough to state once: **a bench that reports a timing without
+proving its frames reached the glass is reporting fiction, whatever it is
+measuring.**
+
 ## 6. Phases (each ships its benchmarks first; no merge red)
 
 **Phase 0 — Skeleton + harness.** Nothing else starts until green.
@@ -429,12 +995,13 @@ is what "never gate on garbage" means in practice.
 - `--flash-on-key` calibration mode; camera calibration of the render path (rig session; offset recorded in budgets.json).
 - *Exit: all of the above runs on one command, publishes JSON, gates in CI, and has been proven red.*
 
-**Phase 1 — The editor that types faster than anything.**
-- **Present-path engineering first** (the §5-L2 finding): recover the extra frame the naive one-shot present pays — display-link-aligned presents, `presentsWithTransaction`, direct-to-display — each lever accepted or rejected by measurement, photon-verified by camera. Target: 60 Hz presented p50 back under ~13 ms, then ProMotion.
-- Rope/gap-buffer text storage; real editing on the glyph grid (selection, scrolling, mouse); single file open/save.
+**Phase 1 — The editor that types faster than anything.** Design of record: §5.3.
+- **Present-path engineering** (the §5-L2 finding): recover the extra frame the naive one-shot present pays — display-link-aligned presents, `presentsWithTransaction`, direct-to-display — each lever accepted or rejected by measurement, photon-verified by camera. Target: 60 Hz presented p50 back under ~13 ms, then ProMotion. **Still open** — the render-loop rework landed (§5-L2) but the extra frame itself has not been cut, and it remains the headline objective.
+- **Done:** gap-buffer text storage with a raw-coordinate line index; real editing on the glyph grid — selection, pixel-quantized scrolling, mouse, undo/redo at depth; single file open/save; a dynamic glyph atlas with LRU eviction and correct one-cell-per-scalar UTF-8; the GUI vocabulary (filled surfaces, gutter, hover, focus, scroll indicator) on two draw calls; the file and peer overlays; presence moved onto the status line.
 - Camera-verified local latency beating every L2 budget on the rig.
-- Syntax highlighting only if it survives the latency gate (tree-sitter is the candidate; it merges only with L2 still green).
-- IME milestone begins here (marked-text protocol correct even if compositions render plainly).
+- Syntax highlighting only if it survives the latency gate. **Landed as an incremental line lexer, not tree-sitter** — the reasoning is in §5.3, and §6's original commitment is unchanged: it merges only with L2 still green and is reverted if the L2 rows move.
+- IME milestone begins here (marked-text protocol correct even if compositions render plainly). **Still open.**
+- East Asian width joins bidi and accessibility on §1's named list (§5.3): one cell per scalar is Phase 1's documented limit.
 - *Exit: L1/L2/L7 green; camera offset documented; typing feels instant and measures it.*
 
 **Phase 2 — Presence + one-gesture secure session.** Design of record: §5.1.
@@ -466,7 +1033,7 @@ Benchmarks are designed ahead of the features they gate, per §3. Each lands wit
 - **Idle CPU foreground / RSS** — event-driven idle must measure ~0; `--bench-idle`.
 - **Present-mode matrix** (`scripts/present-matrix.sh`) — normal vs. scheduled vs. presents-with-transaction; the data picks `Renderer.presentMode`.
 
-**Phase 1 (editor):** queue-transit segment (NSEvent.timestamp → keyDown entry — real IOHID input only; the segment no web editor can see; HUD + camera sessions); open-1 MB-file→first paint; full-speed scroll dropped-frames and wheel→photon; syntax-highlight merge gate (tree-sitter merges only if every L2 gate stays green); IME marked-text correctness + latency; undo at 10k depth.
+**Phase 1 (editor):** *running now* — open-1 MB-file→first paint; typing inside a 1 MB document (the same budget as an empty one, so document size cannot hide in latency); full-speed scroll wheel→presented and dropped frames; selection-drag→presented; the overlay's per-keystroke filter cost; one line of syntax lexing; one atlas miss; undo at 10k depth. *Still ahead:* queue-transit segment (NSEvent.timestamp → keyDown entry — real IOHID input only; the segment no web editor can see; HUD + camera sessions); scroll→photon on the rig; IME marked-text correctness + latency.
 
 **Phase 2 (presence/session):** *running now* — launch → peer row presented; join gesture → code on both screens; confirm → editing; gesture → first shared keystroke presented on the peer's screen; bytes/keystroke on the wire; connected idle CPU (the gate that keeps live-RTT-in-the-UI honest). *Still ahead:* discovery under mDNS-hostile APs (broadcast-fallback path); TCC-denial UX correctness (denied permission must surface in ≤1 s, never an empty peer list).
 

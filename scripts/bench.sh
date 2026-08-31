@@ -47,8 +47,16 @@ EOF
 echo "wrote $RESULTS/l1-lifecycle.json"
 
 echo
+echo "== L2: text model + undo + lexer (headless: correctness first, then micro-budgets) =="
+"$BIN/beam" --bench-text --out "$RESULTS/l2-text.json"
+
+echo
 echo "== L2: typing latency (needs a visible screen — screensaver/occlusion aborts the run) =="
 "$BIN/beam" --bench-typing --out "$RESULTS/l2-typing.json"
+
+echo
+echo "== L2: editor — open a 1 MB file, type in it, scroll it, select in it =="
+"$BIN/beam" --bench-editor --out "$RESULTS/l2-editor.json"
 
 echo
 echo "== L7: idle CPU + RSS =="

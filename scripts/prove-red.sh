@@ -46,7 +46,23 @@ start_host() {
 }
 stop_host() { kill "${HOST_PID:-0}" 2>/dev/null; wait "${HOST_PID:-0}" 2>/dev/null; sleep 1; }
 
+# --- Phase 1 (the editor). These three need no screen at all, so they are the
+# only proofs that always run: `--bench-text` is headless and cannot be aborted
+# by a screensaver.
+proof "L2 undo at depth" \
+  env BEAM_SABOTAGE_UNDO_US=1500 "$BIN/beam" --bench-text --out "$SCRATCH/l2-text.json"
+proof "L2 syntax highlighting — a parser on the line path" \
+  env BEAM_SABOTAGE_HIGHLIGHT_US=80 "$BIN/beam" --bench-text --out "$SCRATCH/l2-text.json"
+proof "L2 atlas miss — an expensive glyph rasterization" \
+  env BEAM_SABOTAGE_ATLAS_MISS_US=1200 "$BIN/beam" --bench-text --out "$SCRATCH/l2-text.json"
+
 if [ "$WHICH" = "all" ]; then
+  proof "L2 editor — slow file open" \
+    env BEAM_SABOTAGE_OPEN_DELAY_MS=150 "$BIN/beam" --bench-editor --out "$SCRATCH/l2-editor.json"
+  proof "L2 editor — slow scroll handling" \
+    env BEAM_SABOTAGE_SCROLL_DELAY_MS=12 "$BIN/beam" --bench-editor --out "$SCRATCH/l2-editor.json"
+  proof "L2 editor — slow overlay filtering (the file-tree keystroke cost)" \
+    env BEAM_SABOTAGE_OVERLAY_DELAY_MS=12 "$BIN/beam" --bench-editor --out "$SCRATCH/l2-editor.json"
   proof "L3 transport — Nagle/delayed-ACK spikes + echo latency" \
     env BEAM_SABOTAGE_ECHO_DELAY_US=40000 BEAM_BENCH_N=200 "$BIN/bench-tcp-echo" --out "$SCRATCH/l3.json"
   proof "L2 typing — keystroke hot path" \

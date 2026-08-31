@@ -25,6 +25,11 @@ jobs:
           mkdir -p perf/results
           printf '{\n  "L1_lifecycle.binary_size_kb": %s,\n  "L1_lifecycle.linked_dylibs": %s\n}\n' "$size_kb" "$dylibs" > perf/results/l1-ci-counters.json
           cat perf/results/l1-ci-counters.json
+      - name: Text model + undo + lexer (headless)
+        # The gap buffer's raw-coordinate line index, UTF-8 scalar handling,
+        # undo/redo and the incremental lexer, plus their micro-budgets. No
+        # window and no display, so it really runs here (PLAN.md §5.3).
+        run: .build/release/beam --bench-text --out perf/results/l2-text.json
       - name: Pairing + encrypted transport (headless)
         # Screen-independent, so unlike every timing bench this one really runs
         # here: SAS agreement, machine-in-the-middle divergence, op round trip,

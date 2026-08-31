@@ -128,13 +128,47 @@ environment, plus one new pair of eyes.
   sleep ends. A screen-aborted run also leaves the compositor in a state where
   the next one aborts too, which is why `gate.sh`'s cool-down is 45 s and not 5.
 
+## Phase 1 — the editor (2026-08-30)
+
+Three new gates need no screen at all: `--bench-text` is headless, like
+`--verify-session`, so these proofs are the only ones on this machine that a
+screensaver cannot abort. Each was run into an empty results directory so the
+gate judged the sabotaged metric and nothing else.
+
+| hook | measured | budget / gate | verdict |
+|---|---|---|---|
+| (none — baseline) | undo p99 **0.1 µs**, lex p99 **1.1 µs**, atlas miss p99 **52.2 µs** | 200/1000, 20/60, 300/1000 | pass |
+| `BEAM_SABOTAGE_UNDO_US=1500` | undo p99 **1953.8 µs** | 200 / 1000 | ✗ red |
+| `BEAM_SABOTAGE_HIGHLIGHT_US=80` | lex p99 **130.0 µs** | 20 / 60 | ✗ red |
+| `BEAM_SABOTAGE_ATLAS_MISS_US=1200` | atlas miss p99 **2124.3 µs** | 300 / 1000 | ✗ red |
+
+- **A first attempt at the undo proof did NOT go red, and that is the useful
+  part.** `BEAM_SABOTAGE_UNDO_US=400` produced p99 **635.9 µs** — three times
+  over the 200 µs design budget and still inside a 1000 µs gate, so the gate
+  correctly passed. The gate is 5× its budget where the rest of the table sits
+  at 2–3×, which is a loose ratio; it is being reported rather than tightened,
+  because narrowing a gate after seeing a 0.1 µs measurement is the same act as
+  widening one after seeing a bad number, and §3 forbids both. Tighten it with
+  the *next* budget revision, before that revision's data exists.
+- **The atlas-miss tail is genuinely noisy and it matters.** Across runs of
+  identical code its p99 read 342.7, 52.2 and 67.5 µs, and its *max* read 3927,
+  1240 and 1900 µs. The p99 spread is CoreText's font-cascade lookup for
+  scalars the system face has no glyph for — paid once per distinct character
+  per session, on the keystroke path the first time that character is seen. The
+  budget row records the measured value from the gate run; the multi-millisecond
+  max is real and is called out in PLAN.md §5.3's validation rather than hidden
+  in an average.
+
 ## Notes
 
 - Sabotage env vars are permanent fixtures, re-runnable any time a gate's
   sensitivity is in doubt: `BEAM_SABOTAGE_ECHO_DELAY_US`, `BEAM_SABOTAGE_NO_NODELAY`,
   `BEAM_SABOTAGE_KEY_DELAY_MS`, `BEAM_SABOTAGE_LAUNCH_DELAY_MS`,
   `BEAM_SABOTAGE_DISCOVERY_DELAY_MS`, `BEAM_SABOTAGE_JOIN_DELAY_MS`,
-  `BEAM_SABOTAGE_PEER_LIST_DELAY_MS`, plus `BEAM_BENCH_N` to shorten proof runs.
+  `BEAM_SABOTAGE_PEER_LIST_DELAY_MS`, and Phase 1's `BEAM_SABOTAGE_UNDO_US`,
+  `BEAM_SABOTAGE_HIGHLIGHT_US`, `BEAM_SABOTAGE_ATLAS_MISS_US`,
+  `BEAM_SABOTAGE_OPEN_DELAY_MS`, `BEAM_SABOTAGE_SCROLL_DELAY_MS`,
+  `BEAM_SABOTAGE_OVERLAY_DELAY_MS`, plus `BEAM_BENCH_N` to shorten proof runs.
   `scripts/prove-red.sh [phase2|all]` runs them. Diagnostic levers that are not
   sabotage: `BEAM_NO_RTT=1` (drop the RTT probe, to attribute idle CPU),
   `BEAM_QUIET_SECONDS` (length of the connected-idle window),

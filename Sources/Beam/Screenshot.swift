@@ -75,9 +75,9 @@ enum Screenshot {
             var w = InstanceWriter(staging, cap: Renderer.maxInstances)
             // Far past every fade: a screenshot shows the settled frame, never
             // a frame caught mid-arrival.
-            state.build(&w, monotonicNow() + 10, cols, rows)
+            let planes = state.build(&w, monotonicNow() + 10, cols, rows, widthPx)
             guard let texture = renderer.renderOffscreen(
-                    width: widthPx, height: heightPx, instanceCount: w.count) else {
+                    width: widthPx, height: heightPx, planes: planes) else {
                 FileHandle.standardError.write("offscreen render failed for \(state.key)\n".data(using: .utf8)!)
                 exit(1)
             }

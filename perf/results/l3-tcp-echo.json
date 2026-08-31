@@ -1,5 +1,5 @@
 {
-  "L3_transport.loopback_tcp_echo_64b_p50_ms": 0.0430,
-  "L3_transport.loopback_tcp_echo_64b_p99_ms": 0.1080,
+  "L3_transport.loopback_tcp_echo_64b_p50_ms": 0.0423,
+  "L3_transport.loopback_tcp_echo_64b_p99_ms": 0.0687,
   "L3_transport.nagle_spikes_in_10k_msgs": 0
 }

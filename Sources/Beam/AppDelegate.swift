@@ -5,11 +5,12 @@ import BeamCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let config: AppConfig
     private var window: NSWindow!
-    private var view: GridView!
+    private var view: GridView?
     private var app: AppModel!
     private var bench: TypingBench?
     private var idleBench: IdleBench?
     private var joinBench: JoinBench?
+    private var editorBench: EditorBench?
     private var probe: PresentProbe?
     private var didFinishLaunchingAt: Double = 0
     private var rendererReadyAt: Double = 0
@@ -48,7 +49,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isReleasedWhenClosed = false
 
         app = AppModel(localName: DiscoveryService.defaultName())
-        view = GridView(renderer: renderer, app: app)
+        // `beam <path>` opens that file. With no argument Beam launches into an
+        // empty untitled buffer, deliberately: restoring a file would put disk
+        // I/O inside `launch_to_typeable_ms` (PLAN.md §5.3).
+        app.openAtLaunch(config.openPath)
+        let view = GridView(renderer: renderer, app: app)
+        self.view = view
         if case .flashOnKey = config.mode { view.flashOnKey = true }
         if let budgets = try? loadBudgets(path: defaultBudgetsPath()) {
             let fps = window.screen?.maximumFramesPerSecond ?? 60
@@ -62,8 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         switch config.mode {
-        case .benchTyping, .benchIdle, .probePresents:
-            app.startInEditor()
+        case .benchTyping, .benchIdle, .probePresents, .benchEditor:
+            // These measure the local render path, so they start on a bare
+            // document with no session and no discovery — which is now simply
+            // the default state, and their numbers stay directly comparable
+            // with every Phase-0/1 run (PLAN.md §5-L2).
             prepareBenchWindow()
         case .benchLaunch, .verifyLaunch:
             prepareBenchWindow()
@@ -84,8 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 window.setFrame(NSRect(x: x, y: f.minY + 40, width: w, height: min(600, f.height - 80)),
                                 display: true)
             }
-        case .normal, .flashOnKey, .verifySession, .dumpScene, .screenshot:
-            break  // both exit in main.swift before any window exists
+        case .normal, .flashOnKey, .verifySession, .dumpScene, .screenshot, .benchText:
+            break  // the headless modes all exit in main.swift before any window exists
         }
     }
 
@@ -104,8 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   colour rather than a flash of system gray.
     /// - No titlebar separator hairline.
     ///
-    /// The lights sit inside the left margin the roster already reserves, so
-    /// they cost the composition nothing — see Scene.topRow.
+    /// The lights sit inside the left margin every surface already reserves, so
+    /// they cost the composition nothing — and row 1 of that same band carries
+    /// the document's name, exactly where a title would be (PLAN.md §5.3).
     static func styleAsContent(_ window: NSWindow) {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
@@ -114,10 +124,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             srgbRed: CGFloat(Renderer.groundSRGB.x), green: CGFloat(Renderer.groundSRGB.y),
             blue: CGFloat(Renderer.groundSRGB.z), alpha: 1)
         window.titlebarSeparatorStyle = .none
-        // Dragging the window is GridView's job (`performDrag` on any press
-        // that is not a peer row), not AppKit's: the view consumes mouseDown to
-        // make the roster clickable, which would otherwise leave a chrome-less
-        // window with no way to move it.
+        // Dragging the window is GridView's job, not AppKit's: the view consumes
+        // mouseDown to place the caret, so the rule is `the chrome is the drag
+        // handle, the document is the document` (PLAN.md §5.3) — a press on the
+        // filename row, the status line or the margins moves the window.
         window.isMovableByWindowBackground = false
     }
 
@@ -177,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Called (on main) with the presentedTime of the very first frame.
     private func firstFrame(_ presentedTime: Double) {
         firstFrameSeen = true
+        guard let view else { return }
         let launchMs = (presentedTime - processStartUptime()) * 1000
         // Phase 0: typeable the instant the first frame is up (first responder
         // is already set). Kept as a separate number so it can diverge later.
@@ -204,7 +215,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bench = TypingBench(view: view, window: window, n: n, outPath: out)
             bench?.start()
         case .benchIdle(let seconds, let out):
-            idleBench = IdleBench(seconds: seconds, outPath: out)
+            // Discovery runs here now, deliberately. Beam used to idle on a
+            // roster whose whole job was discovery; it idles on a DOCUMENT with
+            // discovery in the background (PLAN.md §5.3), and a bench that did
+            // not start it would be measuring a state the product never has.
+            // The metric is re-specified in budgets.json to say so.
+            app.startDiscovery()
+            idleBench = IdleBench(seconds: seconds, outPath: out, view: view)
             idleBench?.start()
         case .benchJoin(let role, let out):
             joinBench = JoinBench(view: view, window: window, app: app, role: role, outPath: out)
@@ -212,9 +229,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .probePresents:
             probe = PresentProbe(view: view, window: window)
             probe?.start()
-        case .normal, .flashOnKey, .verifySession, .dumpScene, .screenshot:
+        case .benchEditor(let out):
+            editorBench = EditorBench(view: view, window: window, app: app, outPath: out)
+            editorBench?.start()
+        case .normal, .flashOnKey, .verifySession, .dumpScene, .screenshot, .benchText:
             app.startDiscovery()
         }
+    }
+
+    /// Every menu item lands here, tagged with its index into `Commands.all`.
+    @objc func runCommand(_ sender: NSMenuItem) {
+        guard sender.tag >= 0, sender.tag < Commands.all.count, let view else { return }
+        // The key equivalent that opened the menu is still the current event,
+        // and its IOHID timestamp is the honest t0 — a command invoked by its
+        // shortcut is accounted exactly like the same command typed into the
+        // view. Chosen with the mouse there is no keystroke to charge, so it
+        // repaints without recording a latency sample.
+        let event = NSApp.currentEvent
+        let t0 = (event?.type == .keyDown) ? event?.timestamp : nil
+        view.perform(Commands.all[sender.tag], t0: t0)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

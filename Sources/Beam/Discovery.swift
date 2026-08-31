@@ -32,7 +32,7 @@ final class DiscoveryService {
 
     /// The advertised name: hostname plus pid, so two instances on one machine
     /// (the bench, and any real two-window test) stay distinct on the wire
-    /// while the roster still shows just the machine.
+    /// while the presence line still shows just the machine.
     static func defaultName() -> String {
         let host = Host.current().localizedName ?? "beam"
         let safe = host.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? Character($0) : "-" }
