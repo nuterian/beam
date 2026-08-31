@@ -268,6 +268,38 @@ enum TextBench {
                   "and deriving the cell did not move the shipping one (got \(shipping.cellWidthPx)x\(shipping.cellHeightPx), baseline \(shipping.baselinePx))")
         }
 
+        // MARK: - The open overlay's ranking (PLAN.md §5.8)
+        //
+        // **Asserted here, and not only in Tests/, on purpose.** This exact
+        // expectation had been in `Tests/BeamCoreTests` the whole time and had
+        // never once run: SwiftPM is broken on the dev machine, so `swift test`
+        // only started executing when CI did — and it immediately found that
+        // typing `rend` ranked `docs/rendering.md` above `src/renderer.rs`,
+        // because a single greedy scan let the `r` in `src` eat the query's
+        // first character. A correctness claim that lives only where nobody
+        // runs it is not a claim.
+        do {
+            let dir = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("beam-rank-\(getpid())")
+            let fm = FileManager.default
+            try? fm.createDirectory(atPath: (dir as NSString).appendingPathComponent("src"),
+                                    withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: (dir as NSString).appendingPathComponent("docs"),
+                                    withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: dir) }
+            for p in ["src/renderer.rs", "src/render_loop.rs", "docs/rendering.md", "unrelated.txt"] {
+                fm.createFile(atPath: (dir as NSString).appendingPathComponent(p),
+                              contents: Data("x".utf8))
+            }
+            let index = FileIndex()
+            index.scan(root: dir)
+            let hits = index.filter("rend", limit: 10).map { index.paths[$0] }
+            check(hits.first == "src/renderer.rs",
+                  "the file finder ranks a segment-start match first (got \(hits.first ?? "nothing"))")
+            check(!hits.contains("unrelated.txt"), "and a non-match never appears")
+            check(index.filter("zzzz", limit: 10).isEmpty, "and a query matching nothing returns nothing")
+        }
+
         // MARK: - Find's scan, in isolation (PLAN.md §5.8)
         //
         // `find_keystroke_to_commit_p99_ms` measured 9.25 ms p50 against a 4 ms
@@ -387,7 +419,7 @@ enum TextBench {
                 ("text bench FAILED:\n  " + failures.joined(separator: "\n  ") + "\n").data(using: .utf8)!)
             exit(4)
         }
-        print("correctness: 11 groups pass (buffer fuzz, utf-8, undo/redo, coalescing, columns, lexer, shell states, remote edits, caret curve, the 1:2 cell at every zoom step, the disk guards)")
+        print("correctness: 12 groups pass (buffer fuzz, utf-8, undo/redo, coalescing, columns, lexer, shell states, remote edits, caret curve, the 1:2 cell at every zoom step, the disk guards, file-finder ranking)")
 
         // MARK: - Micro-budgets
 

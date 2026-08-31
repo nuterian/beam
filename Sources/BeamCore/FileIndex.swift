@@ -132,9 +132,47 @@ public final class FileIndex {
         return haystacks[i].count < haystacks[otherIndex].count
     }
 
+    /// How well `q` matches `hay`, or nil if it does not match at all.
+    ///
+    /// **The match is tried from every path segment, not just from the front.**
+    /// A single greedy left-to-right subsequence scan is the obvious
+    /// implementation and it has one specific, very visible failure: an early
+    /// stray letter eats the query's first character and destroys the run that
+    /// follows. Typing `rend` ranked `docs/rendering.md` above
+    /// `src/renderer.rs`, because the `r` in `src` matched first and left
+    /// `enderer` to be found one character at a time. The unit test that
+    /// asserts otherwise had been in the repository the whole time and had
+    /// never run — SwiftPM is broken on the dev machine, so `swift test` only
+    /// started running when CI did.
+    ///
+    /// Restarting at each segment boundary fixes it for the price of a handful
+    /// of extra passes over a short string: a path has two or three segments,
+    /// and the loop stops at the first character that cannot be matched at all.
+    /// Measured over the repository tree the whole filter stayed inside its
+    /// budget (`overlay_keystroke_to_commit_p99_ms`), which is the row that
+    /// decides whether a ranking idea is affordable.
     private func score(_ q: [UInt8], _ hay: [UInt8]) -> Int? {
+        var best: Int?
+        var start = 0
+        while true {
+            if let s = greedyScore(q, hay, from: start) {
+                if best == nil || s > best! { best = s }
+            }
+            // The next segment start, if there is one.
+            guard let slash = hay[start...].firstIndex(of: 0x2F), slash + 1 < hay.count else { break }
+            start = slash + 1
+        }
+        // **Length breaks ties, finely.** Match quality is scaled up so it
+        // always dominates, and the raw length is subtracted at unit weight —
+        // so between two equally good matches the shorter path wins, which is
+        // what "renderer.rs before rendering.md" actually means. The old
+        // `- count / 8` was too coarse to separate them at all.
+        return best.map { $0 * 8 - hay.count }
+    }
+
+    private func greedyScore(_ q: [UInt8], _ hay: [UInt8], from start: Int) -> Int? {
         var qi = 0, total = 0, run = 0
-        var i = 0
+        var i = start
         while i < hay.count && qi < q.count {
             if hay[i] == q[qi] {
                 run += 1
@@ -148,7 +186,6 @@ public final class FileIndex {
             }
             i += 1
         }
-        guard qi == q.count else { return nil }
-        return total - hay.count / 8
+        return qi == q.count ? total : nil
     }
 }
