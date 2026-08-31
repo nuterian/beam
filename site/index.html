@@ -6,135 +6,202 @@
 <title>Beam — a Mac code editor with a budget for every millisecond</title>
 <meta name="description" content="A native macOS code editor built benchmark-first. Two draw calls. 0.41 ms from keystroke to committed frame. Every number published — including the ones we refuse to claim yet.">
 <link rel="icon" href="icon.png">
+<meta name="theme-color" content="#0D1117">
 <meta property="og:title" content="Beam">
 <meta property="og:description" content="A Mac code editor with a budget for every millisecond.">
 <meta property="og:image" content="shots/editor.png">
 <meta property="og:type" content="website">
 <style>
+  /* ------------------------------------------------------------------
+     One spacing scale, one type scale, one accent. Every gap on the page
+     is a step on the scale rather than a number chosen at the moment it
+     was needed — which is what stops a long page from drifting out of
+     rhythm as sections are added to it.
+     ------------------------------------------------------------------ */
   :root{
-    --ground:#0D1117; --raise:#12171F; --edge:#1E2530;
-    --fg:#EDEEF2; --dim:#98A2B0; --faint:#666F7C;
-    --accent:#23C9FB; --amber:#F0C674;
+    --ground:#0D1117;
+    --edge:#1D242E;
+    --fg:#EDEEF2;
+    --dim:#98A2B0;
+    --faint:#6B7480;
+    --accent:#23C9FB;
+    --amber:#F0C674;
+
     --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
-    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Helvetica,Arial,sans-serif;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+
+    /* Spacing scale. `--s-section` shrinks on small screens, where 128px
+       of air between sections reads as a broken page rather than as calm. */
+    --s-1:8px; --s-2:14px; --s-3:22px; --s-4:34px; --s-5:52px; --s-6:76px;
+    --s-section:clamp(72px, 11vw, 128px);
+
+    /* The text column and the screenshot column. The shot column is exactly
+       the width the screenshots are RENDERED at in points (scripts/build_site.sh
+       uses 1160x750 at 2x), so on a retina display every pixel is exact and
+       nothing is ever upscaled. Change one and change the other. */
+    --text-w:1000px;
+    --shot-w:1160px;
+    --pad:clamp(20px, 4.5vw, 32px);
   }
-  *{box-sizing:border-box}
-  html{scroll-behavior:smooth; -webkit-text-size-adjust:100%}
+
+  *,*::before,*::after{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  @media(prefers-reduced-motion:no-preference){ html{scroll-behavior:smooth} }
+
   body{
     margin:0; background:var(--ground); color:var(--fg);
-    font-family:var(--sans); font-size:18px; line-height:1.55;
-    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+    font-family:var(--sans); font-size:clamp(16px,1.15vw,18px); line-height:1.55;
+    -webkit-font-smoothing:antialiased;
   }
   a{color:inherit}
-  img{max-width:100%; height:auto; display:block}
-  .wrap{max-width:1000px; margin:0 auto; padding:0 32px}
-  /* Screenshots break out past the text column: they are the product, and a
-     product shot indented to a paragraph's measure reads as an illustration. */
-  .bleed{max-width:1320px; margin:0 auto; padding:0 32px}
-  .narrow{max-width:760px}
+  img{display:block; max-width:100%; height:auto}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:4px}
+
+  /* Two rails, one padding. Anything in `.wrap` aligns with anything else in
+     `.wrap`, and a shot in `.shot-wrap` is centred on the same axis. */
+  .wrap{width:100%; max-width:calc(var(--text-w) + 2 * var(--pad)); margin-inline:auto; padding-inline:var(--pad)}
+  .shot-wrap{width:100%; max-width:calc(var(--shot-w) + 2 * var(--pad)); margin-inline:auto; padding-inline:var(--pad)}
 
   /* ---------- nav ---------- */
-  nav{position:sticky; top:0; z-index:20; background:rgba(13,17,23,.72); backdrop-filter:blur(16px)}
-  nav .wrap{display:flex; align-items:center; height:68px; gap:20px}
-  .brand{display:flex; align-items:center; gap:11px; font-weight:600; font-size:17px; letter-spacing:-.01em}
-  .brand img{width:26px; height:26px; border-radius:7px}
-  nav .spacer{flex:1}
-  nav a.link{color:var(--dim); text-decoration:none; font-size:15px}
-  nav a.link:hover{color:var(--fg)}
+  nav{
+    position:sticky; top:0; z-index:20;
+    background:color-mix(in srgb, var(--ground) 78%, transparent);
+    -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px);
+  }
+  nav .wrap{display:flex; align-items:center; gap:var(--s-3); min-height:64px}
+  .brand{display:flex; align-items:center; gap:10px; font-weight:600; font-size:16px; letter-spacing:-.01em}
+  .brand img{width:24px; height:24px; border-radius:6px; flex:none}
+  .spacer{flex:1}
+  .nav-link{color:var(--dim); text-decoration:none; font-size:15px; white-space:nowrap}
+  .nav-link:hover{color:var(--fg)}
 
   .btn{
-    display:inline-flex; align-items:center; gap:9px; text-decoration:none;
-    background:var(--accent); color:#04121A; font-weight:640; font-size:16px;
-    padding:13px 22px; border-radius:10px; border:1px solid transparent;
-    transition:filter .13s ease, transform .13s ease; white-space:nowrap;
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    text-decoration:none; white-space:nowrap;
+    background:var(--accent); color:#04121A; font-weight:640;
+    font-size:16px; line-height:1.2; padding:13px 22px;
+    border:1px solid transparent; border-radius:10px;
   }
-  .btn:hover{filter:brightness(1.09); transform:translateY(-1px)}
-  .btn.sm{padding:9px 16px; font-size:14.5px; border-radius:8px}
+  .btn.sm{font-size:14px; padding:9px 15px; border-radius:8px}
   .btn.ghost{background:transparent; color:var(--dim); border-color:var(--edge)}
-  .btn.ghost:hover{color:var(--fg); border-color:var(--faint); filter:none; transform:none}
+  .btn.ghost:hover{color:var(--fg); border-color:var(--faint)}
+  @media(prefers-reduced-motion:no-preference){
+    .btn{transition:filter .14s ease, transform .14s ease, border-color .14s ease, color .14s ease}
+    .btn:hover{filter:brightness(1.08); transform:translateY(-1px)}
+    .btn.ghost:hover{filter:none; transform:none}
+  }
 
   /* ---------- hero ---------- */
-  header{padding:130px 0 0; position:relative; overflow:hidden}
+  header{position:relative; padding-top:var(--s-section)}
+  /* The hero glow. Bounded by the header's own box rather than centred with a
+     fixed width and pulled back by half of it: the latter is wider than the
+     viewport on a phone, and because it is a pseudo-element it does not show up
+     in any script that walks elements looking for overflow — it just quietly
+     adds a hundred pixels of horizontal scroll that nothing explains.
+     `overflow-x:hidden` on the body would hide it and can break sticky
+     positioning; not overflowing in the first place is the fix. */
   header::before{
-    content:""; position:absolute; left:50%; top:-420px; width:1200px; height:760px;
-    transform:translateX(-50%);
-    background:radial-gradient(ellipse at center, rgba(35,201,251,.13), transparent 68%);
-    pointer-events:none;
+    content:""; position:absolute; left:0; right:0; top:-380px; height:760px;
+    background:radial-gradient(ellipse 46% 50% at 50% 50%, rgba(35,201,251,.13), transparent 70%);
+    pointer-events:none; z-index:-1;
   }
   h1{
-    font-size:clamp(46px,8.4vw,92px); line-height:.98; letter-spacing:-.042em;
-    font-weight:700; margin:0 0 30px; max-width:13ch;
+    font-size:clamp(40px,7.4vw,84px); line-height:1.02; letter-spacing:-.038em;
+    font-weight:700; margin:0 0 var(--s-3); text-wrap:balance; max-width:14ch;
   }
   h1 span{color:var(--accent)}
-  .lede{font-size:clamp(18px,2.3vw,23px); line-height:1.5; color:var(--dim); max-width:44ch; margin:0 0 40px}
-  .cta{display:flex; flex-wrap:wrap; gap:14px; align-items:center}
+  .lede{
+    font-size:clamp(17px,1.6vw,21px); line-height:1.5; color:var(--dim);
+    max-width:46ch; margin:0 0 var(--s-4); text-wrap:pretty;
+  }
+  .cta{display:flex; flex-wrap:wrap; gap:var(--s-2); align-items:center}
   .cta .meta{font-family:var(--mono); font-size:13px; color:var(--faint)}
 
-  /* ---------- shots ---------- */
+  /* ---------- screenshots ---------- */
   .shot{
-    border:1px solid var(--edge); border-radius:16px; overflow:hidden; background:#000;
-    box-shadow:0 40px 110px -34px rgba(0,0,0,.95);
+    border:1px solid var(--edge); border-radius:14px; overflow:hidden;
+    background:var(--ground);
+    box-shadow:0 32px 90px -30px rgba(0,0,0,.9);
   }
-  .hero-shot{margin-top:84px}
+  .shot img{width:100%}
+  .shot-wrap{margin-top:var(--s-6)}
 
   /* ---------- numbers ---------- */
   .numbers{
-    display:grid; grid-template-columns:repeat(4,1fr); gap:48px 40px;
-    padding:130px 0 0;
+    display:grid; grid-template-columns:repeat(4,minmax(0,1fr));
+    gap:var(--s-5) var(--s-4); margin-top:var(--s-section);
   }
+  .num{min-width:0}
   .num .v{
-    font-family:var(--mono); font-size:clamp(34px,4.6vw,50px); line-height:1;
-    letter-spacing:-.035em; color:var(--fg); font-weight:500;
+    font-family:var(--mono); font-weight:500;
+    font-size:clamp(30px,3.6vw,46px); line-height:1; letter-spacing:-.035em;
+    display:flex; align-items:baseline; gap:3px;
   }
-  .num .v i{font-style:normal; font-size:.44em; color:var(--faint); margin-left:4px; letter-spacing:0}
-  .num .k{font-size:15px; color:var(--dim); margin-top:14px; line-height:1.4}
-  @media(max-width:820px){ .numbers{grid-template-columns:repeat(2,1fr); gap:40px 28px} }
+  .num .v small{font-size:.42em; color:var(--faint); letter-spacing:0; font-weight:400}
+  .num .k{font-size:14.5px; color:var(--dim); margin-top:var(--s-2); line-height:1.4; text-wrap:pretty}
+  @media(max-width:900px){ .numbers{grid-template-columns:repeat(2,minmax(0,1fr))} }
 
   /* ---------- sections ---------- */
-  section{padding:130px 0}
+  /* One gap between bands, never two: consecutive bands butt together and the
+     preceding band's bottom padding is the whole gap. A band that draws a RULE
+     above itself is the exception — it has to keep its top padding, or the
+     hairline lands directly on the heading. */
+  .band{padding-block:var(--s-section)}
+  .band + .band{padding-top:0}
+  .ruled{border-top:1px solid var(--edge); padding-top:var(--s-section)}
   .kicker{
-    font-family:var(--mono); font-size:12.5px; letter-spacing:.13em; text-transform:uppercase;
-    color:var(--accent); margin:0 0 22px;
+    font-family:var(--mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 var(--s-3);
   }
-  h2{font-size:clamp(30px,4.6vw,46px); line-height:1.1; letter-spacing:-.032em; font-weight:680; margin:0 0 22px}
-  .say{font-size:19px; color:var(--dim); max-width:56ch; margin:0}
-  .say + .shot{margin-top:56px}
+  h2{
+    font-size:clamp(28px,4vw,44px); line-height:1.1; letter-spacing:-.03em;
+    font-weight:680; margin:0 0 var(--s-3); text-wrap:balance;
+  }
+  .say{font-size:clamp(16px,1.25vw,19px); color:var(--dim); max-width:58ch; margin:0; text-wrap:pretty}
+  .say + .say{margin-top:var(--s-2)}
   .say b{color:var(--fg); font-weight:600}
-  .keys{font-family:var(--mono); font-size:13.5px; color:var(--faint); margin:22px 0 0}
+  .keys{font-family:var(--mono); font-size:13px; color:var(--faint); margin:var(--s-3) 0 0}
+  code{font-family:var(--mono); font-size:.92em}
 
-  .block + .block{margin-top:130px}
-
-  /* ---------- honest ---------- */
-  .honest{padding:130px 0; border-top:1px solid var(--edge)}
-  .honest ul{list-style:none; padding:0; margin:44px 0 0; max-width:70ch}
-  .honest li{padding:22px 0 22px 30px; border-bottom:1px solid var(--edge); position:relative; color:var(--dim); font-size:17px}
-  .honest li::before{content:""; position:absolute; left:0; top:31px; width:10px; height:10px; border-radius:2px; background:var(--amber)}
+  /* ---------- honestly ---------- */
+  .honest ul{list-style:none; padding:0; margin:var(--s-5) 0 0; max-width:72ch}
+  .honest li{
+    position:relative; padding:var(--s-3) 0 var(--s-3) 28px;
+    border-bottom:1px solid var(--edge); color:var(--dim); text-wrap:pretty;
+  }
+  .honest li::before{
+    content:""; position:absolute; left:0; top:calc(var(--s-3) + .55em);
+    width:9px; height:9px; border-radius:2px; background:var(--amber);
+  }
+  /* No dangling rule under the last item: a border-bottom on every row draws a
+     line beneath the last one that separates it from nothing. */
+  .honest li:last-child{border-bottom:0}
   .honest li b{color:var(--fg); font-weight:620}
 
   /* ---------- download ---------- */
-  .get{padding:130px 0; text-align:center; border-top:1px solid var(--edge)}
-  .get h2{max-width:none}
-  .get .say{margin:0 auto; text-align:center}
-  .get .cta{justify-content:center; margin-top:36px}
+  .get{text-align:center}
+  .get .say{margin-inline:auto}
+  .get .cta{justify-content:center; margin-top:var(--s-4)}
   .first-run{
-    font-size:15px; color:var(--faint); max-width:52ch; margin:34px auto 0; line-height:1.6;
+    font-size:14.5px; color:var(--faint); max-width:54ch;
+    margin:var(--s-4) auto 0; line-height:1.6; text-wrap:pretty;
   }
   .first-run b{color:var(--dim); font-weight:600}
 
-  footer{border-top:1px solid var(--edge); padding:44px 0 70px; font-size:15px}
-  footer .wrap{display:flex; flex-wrap:wrap; gap:22px; align-items:center; color:var(--faint)}
+  /* ---------- footer ---------- */
+  footer{border-top:1px solid var(--edge); padding-block:var(--s-5) var(--s-6); font-size:14.5px}
+  footer .wrap{display:flex; flex-wrap:wrap; gap:var(--s-3); align-items:center; color:var(--faint)}
   footer a{color:var(--dim); text-decoration:none}
   footer a:hover{color:var(--fg)}
-  footer .spacer{flex:1}
 </style>
 </head>
 <body>
 
 <nav>
   <div class="wrap">
-    <span class="brand"><img src="icon.png" alt="">Beam</span>
+    <span class="brand"><img src="icon.png" alt="" width="24" height="24">Beam</span>
     <span class="spacer"></span>
-    <a class="link" href="https://github.com/nuterian/beam">GitHub</a>
+    <a class="nav-link" href="https://github.com/nuterian/beam">GitHub</a>
     <a class="btn sm" href="https://github.com/nuterian/beam/releases/latest/download/Beam.dmg">Download</a>
   </div>
 </nav>
@@ -149,86 +216,87 @@
     <div class="cta">
       <a class="btn" href="https://github.com/nuterian/beam/releases/latest/download/Beam.dmg">Download for macOS</a>
       <a class="btn ghost" href="https://github.com/nuterian/beam">Source</a>
-      <span class="meta">Apple silicon · macOS 14+ · 1 MB</span>
+      <span class="meta">Apple silicon · macOS 14+ · 1&nbsp;MB</span>
     </div>
   </div>
 
-  <div class="bleed">
-    <div class="shot hero-shot">
-      <img src="shots/editor.png" width="1960" height="1280"
-           alt="Beam editing a Rust file: document tabs in the traffic-light band, an icon rail on the left, syntax-highlighted code, a selection, and a status line carrying live latency.">
+  <div class="shot-wrap">
+    <div class="shot">
+      <img src="shots/editor.png" width="2320" height="1500" fetchpriority="high"
+           alt="Beam editing a Rust file: document tabs in the traffic-light band, an icon rail down the left, syntax-highlighted code with line numbers, a selection, and a status line carrying the caret position, the language, and live latency.">
     </div>
   </div>
 
   <div class="wrap">
     <div class="numbers">
-      <div class="num"><div class="v">0.41<i>ms</i></div><div class="k">Keystroke to committed frame</div></div>
+      <div class="num"><div class="v">0.41<small>ms</small></div><div class="k">Keystroke to committed frame</div></div>
       <div class="num"><div class="v">2</div><div class="k">Draw calls for the whole interface</div></div>
-      <div class="num"><div class="v">0.012<i>%</i></div><div class="k">Of one core, idle</div></div>
-      <div class="num"><div class="v">1.0<i>MB</i></div><div class="k">The entire application</div></div>
+      <div class="num"><div class="v">0.012<small>%</small></div><div class="k">Of one core, idle</div></div>
+      <div class="num"><div class="v">1.0<small>MB</small></div><div class="k">The entire application</div></div>
     </div>
   </div>
 </header>
 
-<section>
+<section class="band">
   <div class="wrap">
     <p class="kicker">Find</p>
     <h2>No bar. No panel.</h2>
     <p class="say">
-      The query goes on the status line. Every match on screen fills, and the current one
-      <b>is the selection</b> — so typing over it, copying it and deleting it already work.
-      Nothing is laid over the document, which is the entire point of highlighting it.
+      The query goes on the status line. Every match on screen fills, and the current
+      one <b>is the selection</b> — so typing over it, copying it and deleting it
+      already work. Nothing is laid over the document, which is the entire point of
+      highlighting it.
     </p>
     <p class="keys">⌘F find · ⌘G / ⇧⌘G next, previous · esc done</p>
   </div>
-  <div class="bleed">
-    <div class="shot" style="margin-top:52px">
-      <img src="shots/find.png" width="1960" height="1280" loading="lazy"
-           alt="Beam with find open: the query and a match count on the status line, four matches filled in the document, the current one selected.">
+  <div class="shot-wrap">
+    <div class="shot">
+      <img src="shots/find.png" width="2320" height="1500" loading="lazy"
+           alt="Beam with find open: the query and a match count on the status line, and every visible occurrence filled in the document with the current one selected.">
     </div>
   </div>
 </section>
 
-<section>
+<section class="band">
   <div class="wrap">
     <p class="kicker">Chrome</p>
     <h2>Removed, not hidden.</h2>
     <p class="say">
-      No sidebar, no toolbar, no title bar. Tabs sit in the band the traffic lights already
-      occupied, so the chrome costs <b>zero editing rows</b>, and the menus live outside the
-      window entirely. Every pixel inside it is drawn from one glyph atlas — there is no
-      AppKit control in there.
+      No sidebar, no toolbar, no title bar. Tabs sit in the band the traffic lights
+      already occupied, so the chrome costs <b>zero editing rows</b>, and the menus
+      live outside the window entirely. Every pixel inside it is drawn from one glyph
+      atlas — there is no AppKit control in there.
     </p>
     <p class="keys">⇧⌘P command palette · ⌘O open · ⌘K who's nearby</p>
   </div>
-  <div class="bleed">
-    <div class="shot" style="margin-top:52px">
-      <img src="shots/palette.png" width="1960" height="1280" loading="lazy"
-           alt="Beam's command palette: a centred panel over a dimmed document, every command with its key equivalent right-aligned.">
+  <div class="shot-wrap">
+    <div class="shot">
+      <img src="shots/palette.png" width="2320" height="1500" loading="lazy"
+           alt="Beam's command palette: a centred panel over a dimmed document, listing every command with its key equivalent right-aligned.">
     </div>
   </div>
 </section>
 
-<section>
+<section class="band">
   <div class="wrap">
     <p class="kicker">Together</p>
     <h2>One network. No cloud.</h2>
     <p class="say">
-      Beam finds other Beams over Bonjour and pairs in one gesture. Six digits appear on both
-      screens, <b>a human compares them</b>, and the session is encrypted from the first byte.
-      No accounts, no certificates, no server — it works air-gapped.
+      Beam finds other Beams over Bonjour and pairs in one gesture. Six digits appear
+      on both screens, <b>a human compares them</b>, and the session is encrypted from
+      the first byte. No accounts, no certificates, no server — it works air-gapped.
     </p>
     <p class="keys">measured: gesture → digits on both screens 48.7 ms · handshake 0.16 ms</p>
   </div>
-  <div class="bleed">
-    <div class="shot" style="margin-top:52px">
-      <img src="shots/pairing.png" width="1960" height="1280" loading="lazy"
+  <div class="shot-wrap">
+    <div class="shot">
+      <img src="shots/pairing.png" width="2320" height="1500" loading="lazy"
            alt="Beam's join screen: a six-digit verification code set as large block pixels, grouped three and three.">
     </div>
   </div>
 </section>
 
-<div class="honest" id="honest">
+<section class="band ruled honest" id="honest">
   <div class="wrap">
     <p class="kicker">Honestly</p>
     <h2>What Beam is not, yet.</h2>
@@ -241,12 +309,12 @@
       <li><b>The build is unsigned</b>, and it is Latin, LTR and monospace. No soft wrap, no regex search.</li>
     </ul>
   </div>
-</div>
+</section>
 
-<div class="get">
+<section class="band ruled get">
   <div class="wrap">
     <h2>Try it.</h2>
-    <p class="say">Rebuilt and republished from <code style="font-family:var(--mono);font-size:16px">main</code> on every push.</p>
+    <p class="say">Rebuilt and republished from <code>main</code> on every push.</p>
     <div class="cta">
       <a class="btn" href="https://github.com/nuterian/beam/releases/latest/download/Beam.dmg">Download Beam.dmg</a>
       <a class="btn ghost" href="https://github.com/nuterian/beam/blob/main/PLAN.md">Read the plan</a>
@@ -256,11 +324,11 @@
       <b>right-click → Open</b> rather than a double-click. Once only.
     </p>
   </div>
-</div>
+</section>
 
 <footer>
   <div class="wrap">
-    <span class="brand"><img src="icon.png" alt="">Beam</span>
+    <span class="brand"><img src="icon.png" alt="" width="24" height="24">Beam</span>
     <span class="spacer"></span>
     <a href="https://github.com/nuterian/beam">Source</a>
     <a href="https://github.com/nuterian/beam/blob/main/PLAN.md">The plan</a>

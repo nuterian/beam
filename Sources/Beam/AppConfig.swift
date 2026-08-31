@@ -75,6 +75,17 @@ struct AppConfig {
             // rail icons and the join code's block digits square at every size,
             // which is the claim the whole zoom feature rests on.
             let pt = value(after: "--point-size").flatMap { Double($0) }.map { CGFloat($0) }
+            // `--window WxH` (points) frames the shot in a larger real window
+            // for publishing — more columns and rows, the same 2x cell. Clamped
+            // rather than trusted: the offscreen texture is width * height * 4
+            // bytes and a fat typo is a multi-gigabyte allocation.
+            if let win = value(after: "--window") {
+                let parts = win.lowercased().split(separator: "x").compactMap { Double($0) }
+                if parts.count == 2 {
+                    Screenshot.pointSize = CGSize(width: min(max(parts[0], 320), 3000),
+                                                  height: min(max(parts[1], 240), 2000))
+                }
+            }
             return AppConfig(mode: .screenshot(surface: value(after: "--surface") ?? "all",
                                                out: value(after: "--out") ?? "docs/shots",
                                                pointSize: pt),

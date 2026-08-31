@@ -38,6 +38,16 @@ enum SceneStates {
     /// the tools rather than in the product.
     static var pointSize = Zoom.defaultPointSize
 
+    /// The backing scale the seeded states publish into the model.
+    ///
+    /// **It has to be the scale the renderer is about to draw with.** §5.7
+    /// caught this exact drift once already with `--point-size`: the states
+    /// published default cell metrics while the renderer drew at another size,
+    /// so the scroll arithmetic belonged to one cell and the glyphs to another
+    /// and the document stopped short of its own viewport. A hardcoded 2 here
+    /// would reintroduce it the moment `--scale` was used.
+    static var scale: CGFloat = 2
+
     /// The grid the shipping window produces: AppDelegate's 980x640 content at
     /// 2x, through the same cell metrics and the same arithmetic GridView
     /// applies to `drawableSize`.
@@ -213,7 +223,7 @@ enum SceneStates {
                    _ hud: [Scene.Span] = hudSample(),
                    phases: [Renderer.Ink: Float] = [:]) -> State {
             State(key: key, title: title, build: { w, now, cols, rows, widthPx, heightPx in
-                let m = GlyphAtlas.Metrics(pointSize: pointSize, scale: 2)
+                let m = GlyphAtlas.Metrics(pointSize: pointSize, scale: scale)
                 app.cellWidthPx = m.cellWidthPx
                 app.cellHeightPx = m.cellHeightPx
                 app.originXPx = m.originX(forWidthPx: widthPx)

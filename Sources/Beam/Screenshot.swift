@@ -16,14 +16,28 @@ import BeamCore
 /// It is not a golden-image test and must never become one (§5.2): pixels are
 /// reviewed by eye, structure is gated by `--dump-scene`.
 enum Screenshot {
-    /// The default window's content size, so a shot is framed exactly as the
-    /// product is (AppDelegate's contentRect).
-    static let pointSize = CGSize(width: 980, height: 640)
+    /// The window's content size **in points**, defaulting to AppDelegate's
+    /// contentRect so a shot is framed exactly as the product launches.
+    ///
+    /// `--window WxH` opens it wider for publishing. It is a real window size —
+    /// the grid simply gets more columns and rows, exactly as dragging the
+    /// window's corner would — so the result is still the product, at 2x,
+    /// pixel-exact. That matters for the one thing a bigger *scale* cannot do:
+    /// the cell is re-derived in whole device pixels at every scale, so a 4x
+    /// render lands on a 35 px cell rather than 2x18, giving 112 columns
+    /// instead of 108. Same product, different frame — fine to look at, wrong
+    /// to publish as "what it looks like".
+    static var pointSize = CGSize(width: 980, height: 640)
     /// Shots are always 2x regardless of the host's display, so they are
-    /// reproducible on any machine and comparable across sessions.
+    /// reproducible on any machine and comparable across sessions — and so a
+    /// published shot is pixel-exact on a retina screen when it is displayed at
+    /// its point width. Displaying a 2x shot wider than that upscales it, and
+    /// upscaled text is precisely the blur a product about pixel-exact
+    /// rendering cannot afford to show.
     static let scale: CGFloat = 2
 
     static func run(surface: String, outDir: String, pointSizeOverride: CGFloat?) -> Never {
+        SceneStates.scale = scale
         // Before the states are built: they publish their cell metrics into the
         // model, and those have to be the metrics this renderer will draw with.
         SceneStates.pointSize = pointSizeOverride ?? Zoom.defaultPointSize

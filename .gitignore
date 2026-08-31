@@ -6,3 +6,9 @@ dist/
 
 # Agent worktrees — git repos in their own right, never part of a commit.
 .claude/worktrees/
+
+# Generated site assets. `scripts/build_site.sh` renders them from the app, and
+# CI does the same before deploying — so the published screenshots cannot drift
+# from the product the way a committed PNG silently can.
+site/shots/
+site/icon.png

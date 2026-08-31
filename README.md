@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="site/icon.png" width="104" alt="">
+  <img src="resources/icon-1024.png" width="104" alt="">
 </p>
 
 <h1 align="center">Beam</h1>
