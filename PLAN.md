@@ -1644,23 +1644,84 @@ Decisions worth not re-deriving:
   so a growing query can filter the previous result instead of re-scanning.
   Unmeasured optimisations are not something this project merges (§5.1, §5.2).
 
-### What is measured, and what is not
+### What the clean run measured, and the one thing still unexplained
 
-The loop fix is verified by **counts**, which load cannot distort: every pass
-now renders its input on arrival. The isolated find scan (869 µs) was measured
-in a run whose other micro-benchmarks were all at their clean values.
+A gate attempt on a quiet machine reached the end of both present-timed
+benches — **98.2% and 99.6% present delivery**, with every headless micro at its
+clean value (lex one line 0.6 µs p50, atlas miss 7.5, find scan 807 µs) — before
+`--bench-idle` aborted on a focus steal and said so in its new words. Those two
+benches are therefore real measurements and are recorded here; the gate as a
+whole is **not green**, and this section does not pretend otherwise.
 
-**The gate has not been run clean, and this section does not claim it has.** The
-attempt made at the end of this session ran on a machine at load average 5.9,
-with a browser renderer holding a full core and WindowServer at 50%, and it
-produced exactly the fiction §5.2 already records for that condition: lex-one-
-line max 1954 µs against a clean 8.9, atlas-miss max 4317 against 1267, tab
-switch p50 41.6 with 60 of 60 inputs rendered immediately — a number that is not
-reachable through the code path the counters prove it took. `--bench-idle`
-aborted on a focus steal, correctly, and said so in its new words. Per §3 those
-numbers are not written down anywhere, are not compared to a budget, and are not
-the basis of any decision in this section. **This work is not merged until
-`scripts/gate.sh` is green on an idle, attended machine.**
+**Two of the four rows are green, and the loop fix is why.**
+
+```
+row                              budget / gate   before      after
+selection_drag_to_presented        34 / 38       41.63       37.38   PASS
+scroll_wheel_to_presented          34 / 38       48.82       37.33   PASS  (re-specified, paced)
+pointer_burst_125hz_presented      44 / 60         —         48.96   PASS  (new; above budget, as burst_125hz is)
+tab_switch_to_presented            34 / 38       41.61       41.62   FAIL
+overlay_keystroke_to_commit         4 /  8       12.78       13.30   FAIL
+find_keystroke_to_commit            4 /  8         —          9.90   FAIL  (new row, new feature)
+```
+
+The accounting confirms the mechanism it was built to test: every pass now
+renders its input on arrival — typing 300/300, scroll (paced) 119/119, tab 60/60,
+overlay 120/120, find 100/100, drag 199/201 — against 27/60 and 31/120 before.
+Nothing else in L2 moved: commit p50 **0.34** (from 0.41), pipeline depth
+**16.12** (from 16.85), burst 49.07, draw calls 2, RSS 81.3 MB.
+
+**The three failing rows share one signature, and it is not any of the usual
+suspects.** Their distributions are flat — tab switch p50 41.59 against p99
+41.62, overlay commit p50 12.34 against p99 13.30, find commit p50 9.46 against
+p99 9.90. A flat distribution is not frame-quantization luck and not a loaded
+machine; it is a **fixed quantity of work**, about 10–15 ms, on every one of
+those inputs and on none of the others.
+
+Four candidates were measured headlessly, in one run, and all four are
+eliminated:
+
+```
+building a frame over a 1 MB document          11 µs
+   the same frame with the overlay open        16 µs
+   the same frame with find open               25 µs
+the find model call itself (scan + reveal)  1,007 µs
+the highlighter's whole-file state pass      5,900 µs   (not called on any of these paths)
+```
+
+So it is not the model, not the scene build, not the fuzzy filter (§5.7 already
+showed it is the same at 94 candidates and 2,001), and not the whole-file lex.
+The remaining candidate — **untested, and named here so the next session starts
+from it rather than from scratch** — is the *number of frames these paths
+present*. Each of them changes the model through `onNeedsRender`, which sets the
+dirty bit, and then the view calls `noteInput`, which renders immediately; the
+tick that follows therefore renders again, unaccounted. Two presents per input
+against a 2-deep drawable queue would make the next accounted render block in
+`nextDrawable()` for the remainder of a frame, which is exactly the shape and
+size of the constant being measured. `GridView.InputAccounting` now counts
+renders and how many carry no `t0`; one editor-bench run on an attended screen
+either confirms that or eliminates it too.
+
+**`zoom_step_to_presented` measured 38.48 against a gate of 38** in the same run,
+having measured 33.4 in §5.7. It is not treated as a finding: the pass has
+**n = 24**, so its p99 is its maximum and one unlucky frame decides it. The row
+needs more samples before it can say anything, which is itself a defect in the
+bench rather than in the product.
+
+### The rule this session did not break
+
+**None of this is merged.** §3 says no merge with a red gate, and the gate is
+red: three rows fail and one is too thin to judge. What has been established is
+that the three failures are a single unexplained constant rather than three
+problems, that it is none of the four things it most plausibly could have been,
+and that the instrument to identify it already exists.
+
+The garbage run made earlier in the same session — a machine at load average
+5.9, with lex-one-line max at 1954 µs against a clean 8.9 and atlas-miss max at
+4317 against 1267 — is recorded nowhere, compared to nothing, and used for no
+decision here. `perf/results/` still holds the last clean gate run, and CI now
+writes its own numbers to a scratch directory so a shared runner can never
+overwrite that record.
 
 ## 6. Phases (each ships its benchmarks first; no merge red)
 

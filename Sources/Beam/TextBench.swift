@@ -268,6 +268,86 @@ enum TextBench {
                   "and deriving the cell did not move the shipping one (got \(shipping.cellWidthPx)x\(shipping.cellHeightPx), baseline \(shipping.baselinePx))")
         }
 
+        // Building a frame, headlessly, over a 1 MB document — the same
+        // `Scene.frame` the window calls, so this is the commit path's real
+        // work with no display and no Metal in the way.
+        var frameDocUs = 0.0, frameOverlayUs = 0.0, frameFindUs = 0.0, modelTypeUs = 0.0
+        do {
+            var text = ""
+            text.reserveCapacity(1_100_000)
+            let unit = "pub fn render(&mut self, n: usize) -> Result<(), Error> {\n    let f = self.next()?;\n}\n\n"
+            while text.utf8.count < 1_000_000 { text += unit }
+            let app = AppModel(localName: "bench")
+            app.debugOpen(text: text, name: "big.rs")
+            let (cols, rows) = SceneStates.referenceGrid
+            let m = GlyphAtlas.Metrics(pointSize: Zoom.defaultPointSize, scale: 2)
+            app.cellWidthPx = m.cellWidthPx; app.cellHeightPx = m.cellHeightPx
+            var buf = [Renderer.Instance](repeating:
+                Renderer.Instance(col: 0, row: 0, glyph: 0, ink: .fg, alpha: 0),
+                count: Renderer.maxInstances)
+
+            func timeFrame() -> Double {
+                var best = Double.infinity
+                for _ in 0..<20 {
+                    let t = monotonicNow()
+                    buf.withUnsafeMutableBufferPointer { p in
+                        var w = InstanceWriter(p.baseAddress!, cap: p.count)
+                        _ = Scene.frame(app, into: &w, now: monotonicNow(), cols: cols, rows: rows,
+                                        widthPx: 1960, hud: SceneStates.hudSample())
+                    }
+                    best = min(best, (monotonicNow() - t) * 1_000_000)
+                }
+                return best
+            }
+
+            frameDocUs = timeFrame()
+
+            app.debugSetOverlay(.files, query: "rend",
+                                files: ["src/renderer.rs", "src/render_loop.rs"], selection: 0)
+            frameOverlayUs = timeFrame()
+            app.closeOverlay()
+
+            app.startFind()
+            let t = monotonicNow()
+            app.findType("f")
+            modelTypeUs = (monotonicNow() - t) * 1_000_000
+            frameFindUs = timeFrame()
+            app.endFind()
+        }
+
+        // MARK: - Where the tab, overlay and find rows actually spend their time
+        //
+        // Three gated rows measured a CONSTANT cost — tab switch p50 41.59 and
+        // p99 41.62, overlay commit p50 12.34 / p99 13.30, find commit p50 9.46
+        // / p99 9.90 — all on a run at 99.6% present delivery. A flat
+        // distribution is not frame-quantization luck and it is not a loaded
+        // machine; it is a fixed amount of work. These two numbers say whether
+        // that work is the highlighter's whole-file state pass, which is the
+        // one O(lines) thing in the product and is exactly what
+        // `tab_switch_to_presented`'s budget note forbids on a switch.
+        var highlightResetMs = 0.0
+        var highlightVisibleUs = 0.0
+        do {
+            var text = ""
+            text.reserveCapacity(1_100_000)
+            let unit = "pub fn render(&mut self, n: usize) -> Result<(), Error> {\n    let f = self.next()?;\n}\n\n"
+            while text.utf8.count < 1_000_000 { text += unit }
+            let buf = TextBuffer(bytes: Array(text.utf8))
+            let h = Highlighter()
+            var best = Double.infinity
+            for _ in 0..<5 {
+                let t = monotonicNow()
+                h.reset(language: .forPath("x.rs"), buffer: buf)
+                best = min(best, (monotonicNow() - t) * 1000)
+            }
+            highlightResetMs = best
+            // And what a frame actually needs: the visible lines only.
+            let t = monotonicNow()
+            for line in 0..<35 { _ = h.tokens(line: line, buffer: buf) }
+            highlightVisibleUs = (monotonicNow() - t) * 1_000_000
+            check(buf.lineCount > 20_000, "the highlighter fixture is a real file (\(buf.lineCount) lines)")
+        }
+
         // MARK: - The open overlay's ranking (PLAN.md §5.8)
         //
         // **Asserted here, and not only in Tests/, on purpose.** This exact
@@ -495,6 +575,10 @@ enum TextBench {
                      undoUs.count, undoStats.p50, undoStats.p99, undoStats.max))
         print(String(format: "lex one line      n=%d: p50 %.1f  p99 %.1f  max %.1f us",
                      lexUs.count, lexStats.p50, lexStats.p99, lexStats.max))
+        print(String(format: "frame build 1 MB doc: %.0f us   overlay open: %.0f us   find open: %.0f us   findType(model): %.0f us  (diagnostic)",
+                     frameDocUs, frameOverlayUs, frameFindUs, modelTypeUs))
+        print(String(format: "highlight whole 1 MB file: %.2f ms   ·   35 visible lines: %.1f us  (diagnostic)",
+                     highlightResetMs, highlightVisibleUs))
         print(String(format: "find scan 1 MB    n=%d: p50 %.1f  p99 %.1f  max %.1f us  (diagnostic)",
                      findScanUs.count, percentile(findScanUs, 50), percentile(findScanUs, 99),
                      findScanUs.max() ?? 0))

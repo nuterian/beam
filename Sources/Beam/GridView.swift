@@ -984,6 +984,8 @@ final class GridView: NSView {
         var coalesced = 0     // deferred to a tick, charged to the OLDEST pending
         var tickAccounted = 0 // tick renders that carried a pending t0
         var ticks = 0         // display-link ticks in the window
+        var renders = 0       // frames actually encoded and presented
+        var unaccounted = 0   // renders carrying no t0 — nothing is waiting on them
     }
     private(set) var accounting = InputAccounting()
     func resetAccounting() { accounting = InputAccounting() }
@@ -1201,6 +1203,10 @@ final class GridView: NSView {
 
     func render(t0: Double?, remote: Bool = false, recover: Bool = true) {
         guard window != nil, metalLayer.drawableSize.width > 0 else { return }
+        if recorder.collectAll {
+            accounting.renders += 1
+            if t0 == nil { accounting.unaccounted += 1 }
+        }
         renderCount += 1
         renderGeneration &+= 1
         let generation = renderGeneration

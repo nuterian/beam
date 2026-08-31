@@ -1,6 +1,6 @@
 {
-  "L1_lifecycle.launch_to_first_frame_ms": 293.50,
-  "L1_lifecycle.launch_to_typeable_ms": 293.50,
-  "L1_lifecycle.binary_size_kb": 1042,
+  "L1_lifecycle.launch_to_first_frame_ms": 200.45,
+  "L1_lifecycle.launch_to_typeable_ms": 200.45,
+  "L1_lifecycle.binary_size_kb": 1138,
   "L1_lifecycle.linked_dylibs": 36
 }

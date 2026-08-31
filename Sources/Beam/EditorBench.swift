@@ -788,10 +788,11 @@ final class EditorBench {
         // The accounting, per pass. Diagnostic only — nothing here is gated —
         // and it is what turns "this row is a frame high" into a statement
         // about WHICH branch of the hybrid loop the samples came from.
-        print("input accounting (diagnostic — pass: inputs, immediate, coalesced, tick-accounted, ticks):")
+        print("input accounting (diagnostic — pass: inputs, immediate, coalesced, tick-accounted, ticks, renders):")
         for (name, a) in passAccounting {
-            print(String(format: "  %-14@ in %4d  imm %4d  coal %4d  tickAcc %4d  ticks %4d",
-                         name as NSString, a.inputs, a.immediate, a.coalesced, a.tickAccounted, a.ticks))
+            print(String(format: "  %-14@ in %4d  imm %4d  coal %4d  tickAcc %4d  ticks %4d  renders %4d (%d carrying no t0)",
+                         name as NSString, a.inputs, a.immediate, a.coalesced, a.tickAccounted,
+                         a.ticks, a.renders, a.unaccounted))
         }
         print(String(format: "RSS with the file open: %.1f MB", rssMb))
         print(String(format: "presents delivered: %.1f%% (%d of %d)%@", delivered * 100, presentsOK, total,
