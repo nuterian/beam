@@ -1,36 +1,41 @@
-# Beam — Phase 2: the radical-minimal shell and one-gesture collaboration
+# Beam — Phase 3: multiplayer editing that survives the rig
 
-You are continuing **Beam** (`/Users/jugalmanjeshwar/Files/code/colab`), a native macOS app whose entire product thesis is input-to-photon latency on a LAN. Before writing anything: read `PLAN.md` end to end (it holds the settled measured facts and the process), skim `perf/budgets.json`, `perf/harness-proof.md`, and your project memory. Phase 0 is done and validated (gate 22 pass / 0 fail, commits `30e02cd..42283a5`): Metal glyph-atlas grid, hybrid event/display-link render loop, Bonjour presence, TCP/discovery benches, packaged-app verification, live HUD.
+You are continuing **Beam** (`/Users/jugalmanjeshwar/Files/code/colab`), a native macOS app whose entire product thesis is input-to-photon latency on a LAN. Before writing anything: read `PLAN.md` end to end (settled measured facts + the process), skim `perf/budgets.json`, `perf/harness-proof.md`, and your project memory.
+
+Phases 0–2 are done and validated (gate **30 pass / 0 fail**, commits `30e02cd..5ab0661`): Metal glyph-atlas grid, hybrid event/display-link render loop, Bonjour presence, the radical-minimal shell (roster = launch screen, six-digit SAS join, editor with peer cursors and live RTT), X25519 + ChaChaPoly transport, packaged-app verification, and a screen-free `--verify-session` / `--dump-scene` pair that runs in CI.
 
 ## The mission for this session
 
-Build the **radical-minimal UI and one-gesture secure collaboration** (PLAN Phase 2, pulling in whatever slice of Phase 1 editing it needs) — the app should make two macOS users on the same network collaborating on code feel *inevitable*: launch → see each other → one gesture → typing together. Add delight, but Beam's kind of delight: speed you can feel, softness nowhere, zero chrome.
+**Real multiplayer editing** (PLAN Phase 3): `yrs` over TCP for the document, awareness over UDP, relay on its own thread, and the correctness benches that make a hidden or slow peer a non-event. The Phase 2 grid is a deliberate placeholder — last-writer-wins on a cell, one session at a time — and replacing it is this phase's job, without moving any L2 number.
 
-**Design brief (hard constraints):**
-- No menus (beyond ⌘Q), no toolbars, no panels, no preferences window. It should look *wrong* next to VS Code clones.
-- The launch screen IS the peer list: your identity + everyone nearby, rendered on the same Metal grid aesthetic (glyph-atlas everything; the atlas supports what you add to it). Alone on the network is a designed state, not an empty state.
-- **One-gesture join:** click a peer (or press their number) → a short human-verifiable code appears on both screens (host confirms / guest types it — design this well; it derives the session PSK → encrypted transport via Network.framework TLS-PSK or Noise). Target: discovery → connected & editing ≤ 1 s wired (budget exists, L5).
-- Delight ideas to consider (each must survive the perf gates): cursor/peer colors with names that fade in softly, a connection moment that *feels* instant (sub-frame visual acknowledgment), latency-as-UI (each peer's live RTT shown subtly — we're the only app confident enough to display it), keystroke-perfect remote cursors. Animations only if they cost zero on the keystroke hot path and idle CPU stays ≤ 0.1% (gated).
-- Local editing improvements as needed (cursor movement, selection, scrolling on the grid) — but full rope/file-IO is Phase 1 territory; don't gold-plate it before the collaboration gesture works. Hardware-keyboard Latin input only; IME correctness is a planned later milestone.
+Priorities, in order:
 
-## Non-negotiable process (proven twice now; do not soften it)
+1. **`yrs` via C FFI, held to the L4 budgets before it is committed to.** The predecessor's Yjs numbers (encode 30 µs / 18 B, apply 11 µs) are the bar; if `yrs` cannot reproduce them, that is a finding, not a rounding error.
+2. **Keep the wire budget.** Phase 2 sends 30 bytes/keystroke (gate 64) including an 8-byte originating timestamp that exists so peers can display true one-way latency. A `yrs` update must stay inside the same budget, and `--verify-session` is where that counter comes from.
+3. **Separate channels.** Doc sync = TCP (`noDelay`, already enforced on every socket); awareness = UDP, latest-state-wins. The op layer is already split at the type level; the transport split is yours.
+4. **Relay on its own thread/event loop**, with the stall-immunity bench as its regression detector (predecessor: ≤1.3 ms max RTT during 200 ms host main-thread stalls).
+5. **The occluded-peer correctness bench.** A hidden window must keep *applying* remote ops and repaint within one frame on reveal. Beam already renders nothing while occluded — prove the sync half is unaffected.
+6. **N-peer**, if the above holds: Phase 2 accepts one session and rejects the rest.
 
-Benchmark-driven development, exactly as PLAN.md §3: budget first in `perf/budgets.json` → prove the bench can go **red** (sabotage hooks `BEAM_SABOTAGE_*`; record in `perf/harness-proof.md`) → build → gate. Never merge red, never gate on garbage. New work this session needs at minimum: join-gesture time bench (gesture → encrypted session → first shared keystroke rendered both sides), peer-list appearance bench (launch → peers visible, L1 budget exists), and deterministic counters for anything new on the hot path. Percentiles and max, never averages. `scripts/bench.sh` is the one command; keep it that way.
+## Non-negotiable process (proven three times now; do not soften it)
+
+Budget first in `perf/budgets.json` → prove the bench can go **red** (`BEAM_SABOTAGE_*`; `scripts/prove-red.sh`) → build → gate. Percentiles and max, never averages. Never merge red, never gate on garbage, and never move a budget after seeing the data — two rows currently sit inside their gate and above their design budget, and they stay that way (PLAN §5.1) precisely because that ordering is the point.
 
 ## Facts you must not re-derive (measured; PLAN.md has details)
 
-- Pipeline depth is **17 ms** on the 60 Hz dev panel (one extra frame between commit and glass) — the standing Phase-1 target. Don't chase render-side micro-wins; commit p50 is 0.72 ms.
-- WindowServer **drops all presents from occluded windows** and drop callbacks arrive late; the hybrid render loop in `GridView.swift` (immediate-first-input, in-frame coalescing, wake-double-present, occlusion pause + instant reveal) already handles this — extend it, don't bypass it.
-- `scheduled`/`presentsWithTransaction` present modes: tried, failed/unproven under load; default `normal` stands until `scripts/present-matrix.sh` on new evidence.
-- Transport is never the LAN bottleneck (43 µs loopback echo, 0 Nagle spikes) — but every new socket gets `noDelay` and rides the existing gates. Doc sync = TCP, awareness = UDP, separate channels (Phase 3 wiring, but don't preclude it).
-- Idle CPU 0.026% / RSS 65.6 MB are *features* with gates; the display link pauses when quiet — keep it that way through all UI work.
-- Benches need a visible screen; this machine's screensaver cycles aggressively and yields to nothing programmatic — the occlusion guards (exit 5/6) are correct behavior, not bugs.
+- **Pipeline depth is 17 ms** on the 60 Hz dev panel — one extra frame between commit and glass, still the standing Phase-1 target. Commit p50 is 0.4–0.7 ms; the renderer has never been the bottleneck. The loopback E2E p99 (40.5 ms) is *this same extra frame showing up a second time* — it will come down when pipeline depth does, not by touching transport.
+- **Transport and crypto are not measurable next to frame quantization.** Loopback echo 43 µs; handshake 0.47 ms; keystroke → remote presented is within single-digit ms of the *local* present path. Hold transport to its gates so it never regresses into mattering; do not gold-plate it.
+- **`NSWindow.occlusionState` is not a visibility oracle** — macOS only reports `.visible` for a window whose app has *activated*, and activation is exclusive, so in any multi-process bench the inactive side reports itself occluded forever and renders nothing. Ground truth is `presentedTime > 0`; `GridView.assumeVisible` plus a present-delivery ratio is how the join bench stays honest. You will need this again for a three-process bench.
+- **Anything that repaints on a recurring signal will pin the display link awake and destroy idle CPU** (measured 3.4% before fixing; now 0.52%). Status repaints must not extend the loop's warm window. Nothing in Beam blinks, for this reason. Awareness at 60 Hz is the obvious next thing to violate this — budget it before you build it.
+- **The leading lever for the last ~0.1% of connected idle CPU** is stopping `NWBrowser` while a session is live. `DiscoveryService.pauseBrowsing()/resumeBrowsing()` exist and are deliberately not wired up, because the display went dark before it could be measured.
+- `scheduled` / `presentsWithTransaction` present modes: tried, failed/unproven under load; default `normal` stands until `scripts/present-matrix.sh` produces new evidence.
 
 ## Environment quirks (session-blocking if forgotten)
 
-- Build with `scripts/build.sh` (→ `.build/bin/`). Local SwiftPM is broken (mismatched CLT ManifestAPI; also a stale `module.modulemap` masked via VFS overlay inside build.sh). CI uses SwiftPM fine. Durable fix needs sudo: reinstall Command Line Tools.
-- `NWListener` on an ephemeral port needs `allowLocalEndpointReuse = true` **and** a `newConnectionHandler` set, or it fails EINVAL.
-- Local Network TCC permission gates discovery; denial must surface in the UI, never look like an empty network.
-- Disk was nearly full on 2026-08-30 — check before big work.
+- **The display cycles off aggressively and yields to nothing programmatic** (`caffeinate`, IOPMAssertion, synthetic input — none of it works). Photon benches then abort with exit 5/6, which is *correct behavior, not a bug*. Wrap `scripts/bench.sh` in a retry loop, and use `set -o pipefail` — piping into `tee` reports tee's status and will cheerfully report a failed suite as passing.
+- Build with `scripts/build.sh` (→ `.build/bin/`). Local SwiftPM is broken (mismatched CLT ManifestAPI; a stale `module.modulemap` is masked via VFS overlay inside build.sh). CI uses SwiftPM fine. Durable fix needs sudo: reinstall Command Line Tools.
+- `NWListener` on an ephemeral port needs `allowLocalEndpointReuse = true` **and** a `newConnectionHandler`, or it fails EINVAL.
+- Local Network TCC permission gates discovery; denial must surface in the UI, never look like an empty network (there is a designed state for it — keep it).
+- Check free disk before big work.
 
-First actions: read the files above, then write this session's plan (UI/gesture design + its budgets + bench list) into PLAN.md as the Phase 2 section detail, prove the first new benchmark red, and build.
+First actions: read the files above, write this session's plan (the `yrs` evaluation gates + the awareness/relay budgets + the bench list) into PLAN.md as the Phase 3 section detail, prove the first new benchmark red, and build.
