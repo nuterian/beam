@@ -10,6 +10,33 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# **Hold the idle timer off for the WHOLE run, gaps included.**
+#
+# Every bench already declares user activity and takes an
+# `idleDisplaySleepDisabled` assertion — but only for as long as that bench's
+# own process lives. The gate spends minutes *between* processes: five cold
+# launches with a 3 s settle each, a 45 s cooldown after every retry, a package
+# and verify step. Nothing held an assertion across any of that, so the
+# screensaver started in a gap and the next bench aborted — measured 2026-08-31,
+# four attempts in a row, each one dying at the first present-timed bench after
+# a clean L1 and a clean headless suite.
+#
+# `-u` declares user activity, which is what resets the idle timer the
+# screensaver counts; `-t` bounds each assertion so a crashed gate cannot leave
+# the machine awake forever, and the loop renews it. This **prevents** a
+# screensaver from starting. It cannot dismiss one that already has — that
+# still needs a human at the machine (PLAN.md environment quirks), and the
+# pre-flight below is what catches it when it happens.
+#
+# It changes nothing that is measured: it removes an invalid condition rather
+# than affecting a number, which is the same argument the benches' own
+# assertions already rest on.
+if [ "${BEAM_GATE_KEEP_AWAKE:-1}" = 1 ]; then
+  ( while :; do caffeinate -u -t 70 >/dev/null 2>&1 || sleep 70; done ) &
+  KEEP_AWAKE=$!
+  trap 'kill "$KEEP_AWAKE" 2>/dev/null || true' EXIT INT TERM
+fi
+
 ATTEMPTS=${BEAM_GATE_ATTEMPTS:-6}
 # Cool-down between attempts. A screen-aborted run leaves WindowServer in a
 # state where the next run aborts too; a few seconds is not enough to clear it,
