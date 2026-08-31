@@ -3,3 +3,6 @@ dist/
 .DS_Store
 *.xcodeproj
 .swiftpm/
+
+# Agent worktrees — git repos in their own right, never part of a commit.
+.claude/worktrees/

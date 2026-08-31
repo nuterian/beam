@@ -142,7 +142,7 @@ final class GridView: NSView {
     /// drawn; this is a change detector, and it is what makes an animated caret
     /// affordable: the curve is flat for most of its period, so most ticks
     /// present nothing at all. Measured frames drop from 60/s to about 7.
-    private static func caretAlpha(_ t: Float) -> Float {
+    static func caretAlpha(_ t: Float) -> Float {
         guard t >= 0 else { return 1 }
         let c = cos(t * 2 * .pi / Renderer.caretPeriod)
         return min(1, max(0.12, 0.12 + 0.88 * min(1, max(0, c * 3 + 0.5))))
@@ -676,14 +676,26 @@ final class GridView: NSView {
     /// How long the curve stays visually still from here — the flat top or the
     /// flat bottom of the pulse. Derived from the same shaped cosine the shader
     /// draws, so the two cannot disagree about when something is happening.
-    private static func secondsUntilCurveMoves(_ t: Float) -> Double {
+    ///
+    /// The curve is clamped whenever `|cos(2*pi*t/p)| >= 1/6`, so it *moves*
+    /// during the intervals `[edge + k*p/2, p/2 - edge + k*p/2]`. The first
+    /// version of this listed `edge, p - edge, p + edge` as the boundaries —
+    /// but `p - edge` is where a ramp *ends*, not where one begins, so for a
+    /// third of every cycle it promised stillness while the curve was moving
+    /// and the caret would have frozen mid-ramp for ~64 ms, over and over.
+    /// `--bench-text` samples the prediction against the curve and caught it
+    /// with 326 violations; nobody would ever have attributed that stutter to
+    /// a timer.
+    static func secondsUntilCurveMoves(_ t: Float) -> Double {
         let p = Double(Renderer.caretPeriod)
-        // The curve is clamped whenever |cos(2*pi*t/p)| > 1/6; it starts moving
-        // at the next crossing of that threshold.
-        let edge = acos(1.0 / 6.0) / (2 * .pi) * p            // ~0.268 s
+        let half = p / 2
+        let edge = acos(1.0 / 6.0) / (2 * .pi) * p        // ~0.268 s
         let phase = Double(t).truncatingRemainder(dividingBy: p)
-        for boundary in [edge, p - edge, p + edge] where boundary > phase {
-            return max(0, boundary - phase)
+        for k in 0...2 {
+            let start = edge + Double(k) * half
+            let end = (half - edge) + Double(k) * half
+            if phase >= start && phase < end { return 0 }  // already ramping
+            if phase < start { return start - phase }
         }
         return 0
     }

@@ -194,12 +194,52 @@ enum TextBench {
             check(app.remote?.offset == 2, "the remote caret advanced past its own insert")
         }
 
+        // MARK: Correctness — the caret's sleep prediction matches its own curve
+
+        do {
+            // The blink pauses the display link and sets an alarm for the next
+            // moment the curve moves. If that prediction disagrees with the
+            // curve the shader actually draws, the caret freezes mid-pulse or
+            // jumps — a defect nobody would attribute to a timer. So the two
+            // are checked against each other rather than trusted to stay in
+            // step (PLAN.md §5.5).
+            let period = Double(Renderer.caretPeriod)
+            var flatViolations = 0
+            var everMoves = false
+            var t = 0.0
+            while t < period * 2 {
+                let rest = GridView.secondsUntilCurveMoves(Float(t))
+                let a0 = GridView.caretAlpha(Float(t))
+                if rest > 0.01 {
+                    // It claims the curve is still for `rest` seconds. Sample it.
+                    var u = 0.0
+                    while u < rest {
+                        if abs(GridView.caretAlpha(Float(t + u)) - a0) > 1.0 / 255 { flatViolations += 1; break }
+                        u += 0.004
+                    }
+                } else {
+                    everMoves = true
+                }
+                t += 0.004
+            }
+            check(flatViolations == 0,
+                  "the caret's sleep prediction never claims stillness while the curve is moving (\(flatViolations) violations)")
+            check(everMoves, "and it does not claim the curve is always still")
+            // The shape itself: fully on at the top, near the floor at the
+            // bottom, and a ramp short enough to read as a blink.
+            check(GridView.caretAlpha(0) > 0.99, "the pulse rests fully on")
+            check(GridView.caretAlpha(Float(period / 2)) < 0.2, "and dips to its floor")
+            check(GridView.caretAlpha(Float(period / 2)) > 0.05,
+                  "but never to nothing — a caret you cannot find is worse than one that does not blink")
+            check(GridView.caretAlpha(-1) == 1, "a negative time means rest solid")
+        }
+
         if !failures.isEmpty {
             FileHandle.standardError.write(
                 ("text bench FAILED:\n  " + failures.joined(separator: "\n  ") + "\n").data(using: .utf8)!)
             exit(4)
         }
-        print("correctness: 8 groups pass (buffer fuzz, utf-8, undo/redo, coalescing, columns, lexer, shell states, remote edits)")
+        print("correctness: 9 groups pass (buffer fuzz, utf-8, undo/redo, coalescing, columns, lexer, shell states, remote edits, caret curve)")
 
         // MARK: - Micro-budgets
 
