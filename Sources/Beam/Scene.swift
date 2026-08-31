@@ -324,28 +324,43 @@ enum Scene {
         /// rows, which is the entire reason the rail is where the navigation
         /// lives (PLAN.md §5.4).
         let railCols = 4
-        /// Width of the line-number field, in cells. Five digits covers every
-        /// file up to 100,000 lines, which is the number §5.4 already promised;
-        /// sizing the field to the promise rather than to the open document is
-        /// what makes `codeCol` — and therefore `tabCol` — a constant.
-        static let gutterCols = 5
+        /// Width of the line-number field, in cells: **as many digits as this
+        /// document actually has**, never fewer than two.
+        ///
+        /// It was briefly pinned at five — enough for any file under 100,000
+        /// lines — so that `codeCol` would be constant and the tab strip could
+        /// be nailed to it. That bought one alignment and paid three columns of
+        /// permanent indent for it on every ordinary file, which is the wrong
+        /// way round: the gutter is on screen always and the alignment is
+        /// noticed once.
+        ///
+        /// Sized to the **document** rather than to the visible rows on
+        /// purpose. Viewport-sizing is tighter still, but the width would then
+        /// change as you scroll past line 99 or line 999 — and the whole code
+        /// column would slide sideways underneath you mid-scroll, which is a
+        /// far worse thing to feel than three unused columns are to look at.
+        static let minGutterCols = 2
         /// Column the last digit of a line number sits on.
         let gutterRight: Int
         let codeCol: Int
         let textCols: Int
-        /// Where the tab strip starts — **the same column the code starts on**.
+        /// Where the tab strip starts. **Fixed**, and not derived from the
+        /// gutter.
         ///
-        /// It used to be a fixed 8 while `codeCol` grew with the line count, so
-        /// the two agreed only for files under 100 lines and §5.3's "one
-        /// alignment grid" was false on every real document. Now the gutter is
-        /// a fixed-width *field* (see `gutterCols`) instead of a fixed *column*,
-        /// so `codeCol` is a constant for anything under 100,000 lines and the
-        /// tab strip can be nailed to it: one left edge for the tab, the line
-        /// number's field and the first character of every line. Tabs still
-        /// never slide when you switch files, which is what the old fixed
-        /// column was protecting — it was just protecting it in the way that
-        /// broke the alignment.
-        var tabCol: Int { codeCol }
+        /// Two constraints fight here and only one can win. The tab strip must
+        /// clear the traffic lights, which occupy row 0 out to column 6, so it
+        /// cannot start before column 8. And the gutter must be as wide as the
+        /// document needs and no wider, so `codeCol` moves from file to file.
+        /// They therefore cannot always share an edge.
+        ///
+        /// The tab wins its own column, because a tab strip that slid sideways
+        /// every time you switched documents would be intolerable, while a code
+        /// column that sits two cells further right in a 30,000-line file than
+        /// in a 30-line one is invisible. §5.3's "one alignment grid" is
+        /// amended accordingly: **the tab belongs to the pane, the gutter and
+        /// the code belong to the document.** They coincide for any file under
+        /// a hundred lines and diverge, quietly, above it.
+        var tabCol: Int { railCols + 4 }
         /// First row a rail icon may occupy. One row below the document's
         /// first line, so the rail does not start hard against the tab strip's
         /// divider.
@@ -359,13 +374,10 @@ enum Scene {
             var digits = 1
             var n = max(1, lineCount)
             while n >= 10 { n /= 10; digits += 1 }
-            // **A field, not a column.** The gutter is `gutterCols` wide with
-            // one cell of air on each side of it, so the code column is a
-            // constant for every file anyone actually opens and only a file
-            // over 100,000 lines moves it. The old rule grew the code column
-            // from 100 lines up, which is why the tab strip and the code
-            // stopped sharing a left edge on essentially every real document.
-            let field = max(Self.gutterCols, digits)
+            // As many digits as the document has, and no more. The two cells
+            // of air after the field are what separate a line number from the
+            // code it indexes.
+            let field = max(Self.minGutterCols, digits)
             let code = railCols + field + 2
             codeCol = code
             gutterRight = code - 2

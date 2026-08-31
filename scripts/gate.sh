@@ -17,7 +17,25 @@ ATTEMPTS=${BEAM_GATE_ATTEMPTS:-6}
 # the same bench passed first try after the machine sat idle).
 COOLDOWN=${BEAM_GATE_COOLDOWN:-45}
 LOG=${BEAM_GATE_LOG:-.build/gate.log}
+BIN=.build/bin
+
+# Pre-flight, so a screen-aborted attempt costs seconds rather than minutes.
+# `--verify-launch` exits the instant the first frame is PRESENTED, which is
+# exactly the question every timing bench is about to ask; without it the loop
+# discovers an occluded display only after a full rebuild, five cold launches
+# and part of the bench suite. Same ground truth every bench uses — a presented
+# frame, never occlusionState (PLAN.md §5-L2).
+screen_is_awake() {
+  [ -x "$BIN/beam" ] || return 0        # nothing built yet: let the run build it
+  "$BIN/beam" --verify-launch >/dev/null 2>&1
+}
+
 for attempt in $(seq 1 "$ATTEMPTS"); do
+  if ! screen_is_awake; then
+    echo "gate attempt $attempt/$ATTEMPTS: the display is not accepting presents (screensaver?) — waiting ${COOLDOWN}s" >&2
+    sleep "$COOLDOWN"
+    continue
+  fi
   echo "== gate attempt $attempt/$ATTEMPTS ==" >&2
   scripts/bench.sh 2>&1 | tee "$LOG"
   status=${PIPESTATUS[0]}

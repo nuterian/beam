@@ -811,6 +811,76 @@ opening the palette all enter the same hybrid render loop and are accounted like
 typing. `draw_calls_per_frame` stays at budget 2: the rail and the tabs are
 chrome-plane instances and earn no third draw.
 
+### What the design passes found (2026-08-30)
+
+Change 1 was explored by **three agents working in parallel** — one critiquing
+the rendered screenshots without touching code, two building in isolated git
+worktrees on separate lanes (chrome/layout, and typography/colour) so their
+edits could not collide. Everything below came out of that and is recorded
+because most of it is not taste.
+
+**Four defects that were shipping, none of them visible as "a bug".**
+
+- **The window was never centred.** `cols` and `rows` truncate, and the grid
+  origin was the constant `(cellWidth, cellHeight/2)` — so the entire truncation
+  remainder landed on the right and bottom edges: measured **18 px left against
+  34 right, 18 top against 38 bottom**. In a window that is nothing but content,
+  every edge inherits that. It is the diffuse "floats up and to the left" that no
+  single element explains, and it survived two visual sessions because nothing
+  was *wrong*, only unbalanced.
+- **§5.3's "one alignment grid" was false on every real file.** `tabCol` was
+  pinned at 8 while `codeCol` grew with the line count; they agreed only under
+  100 lines, which is exactly the size of the sample document every screenshot
+  used. The gutter is now a fixed five-cell *field* rather than a fixed column.
+  A seeded state that hides the failure it was built to catch is worse than no
+  seeded state, and the sample document is now the wrong size on purpose.
+- **The caret's palette entry was out of gamut.** It declared L 0.930 / C 0.075 /
+  H 225; `#B1F3FF` clips the blue channel and actually renders at **H 210**. The
+  design table documented a colour the GPU has never drawn. Every OKLCH entry in
+  that table is now checked for clipping, because a design system whose numbers
+  are aspirational is a design system that lies.
+- **`.faint` (3.2:1) was below AA on seven jobs**, including the gutter and
+  inactive tab labels — so an inactive **tab** was dimmer than a code
+  **comment**. One slot had accumulated every "secondary" role in the product.
+
+**The tonal inversion, and why it needed no new colour.** The active tab was a
+*lighter* fill on the ground, which is the silhouette of a selected row in a
+list. Modern editors invert it: the frame recedes and the front tab *is* the
+page. Beam's ground was already its darkest ink, so the recess is `scrim` at
+partial coverage and **the active tab is the absence of it** — literally the
+same pixels as the document one row below, with the ground never named twice.
+Two hairlines were then deleted rather than kept, because the recess already
+drew those boundaries.
+
+**One curve, three implementations, two desyncs in one day.** The caret's blink
+is evaluated in the shader, mirrored on the CPU as a change detector, and
+inverted again to predict when to wake the render loop. The prediction used the
+moments a ramp *ends* as if they were where one *begins* (caught by a bench that
+samples the prediction against the curve — 326 violations); and the shader and
+the CPU disagreed about the gain, so the CPU slept through stretches where the
+alpha was still climbing. Both are the same mistake. The gain, floor and period
+are now single constants the shader interpolates and the CPU reads.
+
+**A process note worth more than any of the above.** Git worktrees branch from a
+**commit**, so an agent given one sees nothing uncommitted. The first pair were
+quietly iterating on the *pre-Phase-1* codebase — spotted only because a build
+log listed a file that had been deleted hours earlier. Parallel exploration on
+uncommitted work is exploration of the wrong thing; commit first, always.
+
+**What the critique protected, which matters as much as what it changed.** Three
+things were named as already good and not to be traded away in a redesign: the
+gamma-correct pipeline and whole-pixel grid; the deliberate separation between
+the syntax band and the peer-identity band, which is why a collaborator's caret
+can never read as a keyword (most editors get this wrong by giving collaborators
+theme colours); and the caret itself. A design pass that only knows what to
+change will regress the things nobody thought to defend.
+
+**One trade declined.** Bleeding the recessed chrome to the window's edge needs a
+per-row ground fill beneath the document — about 3,500 extra instances every
+frame, on the keystroke path, roughly doubling a 0.34 ms commit — to reclaim a
+26 px inset that reads as window padding. In this product that is the wrong way
+round, and it is recorded here so it is not re-proposed as an oversight.
+
 ### Change 2 — Version control as documents, not as a panel
 
 The design rule that keeps this from becoming an IDE: **a diff is a document.**
